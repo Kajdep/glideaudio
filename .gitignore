@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+release/
+output/
+ffmpeg/
+node_modules/
+.DS_Store
+Thumbs.db
