@@ -2,11 +2,14 @@
 
 ## Identity
 
-- Partner Center identity / package name: `_TBD_`
-- Publisher: `_TBD_`
-- Publisher display name: `_TBD_`
-- Package family name: `_TBD_`
-- Store ID / product ID: `_TBD_`
+- Partner Center identity / package name: `NatflaLtd.GlideAudio`
+- Publisher: `CN=5A609937-1921-4929-89C2-766139363CA0`
+- Publisher display name: `Natfla Ltd`
+- Package family name: `NatflaLtd.GlideAudio_pa3aqdh53p230`
+- Package SID: `S-1-15-2-2161190272-2418176117-478214088-3628919072-1152830748-3081032745-1746997563`
+- Store ID / product ID: `9P1F9CXS8KPF`
+- Store deep link: `Available after the product is live`
+- Web Store URL: `Available after the product is live`
 
 ## Package
 
@@ -112,7 +115,7 @@ audio cleanup, voice enhancement, noise reduction, video audio repair, podcast a
 
 ## Final Check
 
-- [ ] identity values copied from Partner Center
+- [x] identity values copied from Partner Center
 - [ ] category chosen
 - [ ] hosted privacy URL is live
 - [ ] screenshots match the current UI
