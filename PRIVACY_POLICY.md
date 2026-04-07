@@ -64,4 +64,6 @@ If the privacy behavior of GlideAudio changes materially, this policy should be 
 
 ## Contact
 
-Support and privacy contact details should be added before public distribution.
+Current public release page: `https://kajdep.itch.io/glideaudio`
+
+If a dedicated support email or hosted privacy page is added later, this section should be updated to point to those direct contacts.

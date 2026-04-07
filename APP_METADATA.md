@@ -6,7 +6,7 @@
 - Slug: `glideaudio`
 - Repo path: `D:\glide-apps\glideaudio`
 - GitHub repo: `https://github.com/Kajdep/glideaudio`
-- Product status: `desktop prototype packaged for testing`
+- Product status: `public itch release with packaged Windows build`
 - Platform: `Windows desktop`
 
 ## Positioning
@@ -33,10 +33,10 @@
 ## URLs
 
 - Planned glidevideo.com page: `https://www.glidevideo.com/glideaudio`
-- itch.io listing: `_TBD_`
+- itch.io listing: `https://kajdep.itch.io/glideaudio`
 - Microsoft Store listing: `_TBD_`
 - Privacy policy URL: `Hosted URL still TBD. Local policy file: D:\glide-apps\glideaudio\PRIVACY_POLICY.md`
-- Support page or support email: `_TBD_`
+- Support page or support email: `https://kajdep.itch.io/glideaudio`
 
 ## Submission Assets
 
@@ -86,9 +86,9 @@
 
 - [ ] pricing
 - [ ] privacy URL
-- [ ] support contact
+- [ ] dedicated support contact beyond the itch release page
 - [ ] screenshot list
 - [ ] trailer/demo
 - [ ] Microsoft Store identity values
-- [ ] final hosted submission URLs
+- [ ] final hosted privacy URL
 - [ ] final system requirements confirmation from manual QA

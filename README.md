@@ -2,6 +2,8 @@
 
 GlideAudio is a Windows desktop app for cleaning spoken audio in videos and audio files without requiring a full DAW or cloud workflow.
 
+Public release page: [kajdep.itch.io/glideaudio](https://kajdep.itch.io/glideaudio)
+
 See `PRODUCT-BRIEF.md` for the build-oriented product spec.
 
 ## Current Build

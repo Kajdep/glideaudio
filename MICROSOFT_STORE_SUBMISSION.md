@@ -78,9 +78,9 @@ audio cleanup, voice enhancement, noise reduction, video audio repair, podcast a
 ```
 
 - Category / subcategory: `_TBD_`
-- Website URL: `https://www.glidevideo.com/glideaudio` planned
+- Website URL: `https://kajdep.itch.io/glideaudio`
 - Privacy policy URL: `Hosted URL still TBD. Local package includes PRIVACY_POLICY.md.`
-- Support URL or support email: `_TBD_`
+- Support URL or support email: `https://kajdep.itch.io/glideaudio`
 
 ## Store Assets
 
@@ -114,7 +114,7 @@ audio cleanup, voice enhancement, noise reduction, video audio repair, podcast a
 
 - [ ] identity values copied from Partner Center
 - [ ] category chosen
-- [ ] privacy/support links are live
+- [ ] hosted privacy URL is live
 - [ ] screenshots match the current UI
 - [ ] branded tile assets exist
 - [ ] no placeholder branding remains
