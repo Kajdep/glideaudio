@@ -1116,6 +1116,8 @@ class GlideAudioApp(ctk.CTk):
         self.preview_active_variant: Optional[str] = None
         self.preview_last_variant: Optional[str] = None
         self.preview_playback_state = "stopped"
+        self.preview_is_stale = True
+        self.suggested_preset_name: Optional[str] = None
 
         self.mode = "idle"
         self.active_process: Optional[subprocess.Popen] = None
@@ -1131,17 +1133,19 @@ class GlideAudioApp(ctk.CTk):
         self.output_dir = Path(saved_output_dir) if saved_output_dir else default_output_dir
         self.output_path: Optional[Path] = None
 
-        self.source_status_var = ctk.StringVar(value="Drop a video or audio file here, or browse to begin.")
-        self.source_meta_var = ctk.StringVar(value="Audio source metadata will appear here.")
-        self.audio_meta_var = ctk.StringVar(value="No source loaded yet.")
+        self.source_status_var = ctk.StringVar(value="Start here: drop one audio or video file, or browse to begin.")
+        self.source_meta_var = ctk.StringVar(value="GlideAudio will inspect the source, suggest a preset, and prepare a short compare loop.")
+        self.audio_meta_var = ctk.StringVar(value="Single-file workflow first. Use batch only after the result sounds right.")
         self.source_preview_caption_var = ctk.StringVar(value="Load media to inspect waveform or poster frame.")
-        self.preview_status_var = ctk.StringVar(value="Preview the original and cleaned loop after analysis.")
+        self.preview_status_var = ctk.StringVar(value="GlideAudio will build a short original-vs-cleaned preview after analysis.")
         self.preview_transport_var = ctk.StringVar(value="Idle")
-        self.preview_original_caption_var = ctk.StringVar(value="Generate the preview loop to hear the untouched segment.")
-        self.preview_cleaned_caption_var = ctk.StringVar(value="The processed loop will show here after preview render.")
-        self.preset_hint_var = ctk.StringVar(value="Load a source and GlideAudio will suggest a starting preset.")
-        self.batch_status_var = ctk.StringVar(value="Queue idle. Add files to batch export.")
-        self.export_status_var = ctk.StringVar(value="Choose an output mode and render the repaired file.")
+        self.preview_original_caption_var = ctk.StringVar(value="Original reference loop appears here after analysis.")
+        self.preview_cleaned_caption_var = ctk.StringVar(value="Cleaned loop appears here after preview render.")
+        self.suggested_preset_var = ctk.StringVar(value="Waiting for analysis.")
+        self.preset_hint_var = ctk.StringVar(value="GlideAudio will recommend a simple starting preset after analysis.")
+        self.batch_status_var = ctk.StringVar(value="Optional: queue extra files after you trust the single-file result.")
+        self.export_status_var = ctk.StringVar(value="Step 3: choose where to save the result, then export the final cleaned file.")
+        self.next_step_var = ctk.StringVar(value="Next: load one audio or video file. GlideAudio analyzes it automatically.")
         self.status_var = ctk.StringVar(value="Ready.")
 
         saved_preset = self.app_settings.get("preset")
@@ -1201,6 +1205,29 @@ class GlideAudioApp(ctk.CTk):
             font=ui_font(14),
             text_color=COLORS["text_secondary"],
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        next_step_frame = ctk.CTkFrame(
+            header,
+            fg_color=COLORS["bg_tertiary"],
+            corner_radius=16,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
+        next_step_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        next_step_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            next_step_frame,
+            text="Next",
+            font=ui_font(12, "bold"),
+            text_color=COLORS["primary_soft"],
+        ).grid(row=0, column=0, sticky="w", padx=(14, 10), pady=10)
+        ctk.CTkLabel(
+            next_step_frame,
+            textvariable=self.next_step_var,
+            font=ui_font(12),
+            text_color=COLORS["text_primary"],
+            justify="left",
+            wraplength=880,
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=10)
         ctk.CTkLabel(
             header,
             text=f"v{APP_MARKETING_VERSION}",
@@ -1221,22 +1248,22 @@ class GlideAudioApp(ctk.CTk):
         right.grid(row=0, column=1, sticky="nsew")
         right.grid_columnconfigure(0, weight=1)
 
-        self.source_card = self._build_card(left, "Source")
+        self.source_card = self._build_card(left, "1. Load Source")
         self.source_card.pack(fill="x", pady=(0, 14))
 
-        self.analysis_card = self._build_card(left, "Diagnostics")
+        self.analysis_card = self._build_card(left, "Checks")
         self.analysis_card.pack(fill="x", pady=(0, 14))
 
-        self.cleanup_card = self._build_card(left, "Cleanup")
+        self.cleanup_card = self._build_card(left, "Tune Cleanup")
         self.cleanup_card.pack(fill="x")
 
-        self.preview_card = self._build_card(right, "A/B Preview")
+        self.preview_card = self._build_card(right, "2. Preview Before / After")
         self.preview_card.pack(fill="both", expand=True, pady=(0, 14))
 
-        self.export_card = self._build_card(right, "Export")
+        self.export_card = self._build_card(right, "3. Export Final File")
         self.export_card.pack(fill="x", pady=(0, 14))
 
-        self.batch_card = self._build_card(right, "Batch Queue")
+        self.batch_card = self._build_card(right, "Batch Queue (Optional)")
         self.batch_card.pack(fill="both")
 
         self.log_card = self._build_card(self, "Log")
@@ -1279,7 +1306,7 @@ class GlideAudioApp(ctk.CTk):
 
         self.analyze_button = ctk.CTkButton(
             controls,
-            text="Re-Analyze",
+            text="Analyze Again",
             command=self._start_analysis,
             fg_color="transparent",
             hover_color=COLORS["surface_alt"],
@@ -1290,6 +1317,15 @@ class GlideAudioApp(ctk.CTk):
             corner_radius=14,
         )
         self.analyze_button.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+
+        ctk.CTkLabel(
+            self.source_card,
+            text="Browse or drop one file. GlideAudio analyzes it automatically so you can go straight into listening and export.",
+            font=ui_font(12),
+            text_color=COLORS["text_secondary"],
+            justify="left",
+            wraplength=430,
+        ).pack(fill="x", padx=18, pady=(0, 12))
 
         self.source_drop_frame = ctk.CTkFrame(
             self.source_card,
@@ -1384,11 +1420,47 @@ class GlideAudioApp(ctk.CTk):
         ctk.CTkLabel(tile, textvariable=variable, font=ui_font(18, "bold"), text_color=COLORS["text_primary"]).pack(anchor="w", padx=14, pady=(0, 12))
 
     def _build_cleanup_section(self) -> None:
+        recommendation = ctk.CTkFrame(
+            self.cleanup_card,
+            fg_color=COLORS["bg_tertiary"],
+            corner_radius=18,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
+        recommendation.pack(fill="x", padx=18, pady=(0, 12))
+        recommendation.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            recommendation,
+            text="Recommended Start",
+            font=ui_font(12, "bold"),
+            text_color=COLORS["primary_soft"],
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 2))
+        ctk.CTkLabel(
+            recommendation,
+            textvariable=self.suggested_preset_var,
+            font=ui_font(16, "bold"),
+            text_color=COLORS["text_primary"],
+        ).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 12))
+        self.reapply_suggested_button = ctk.CTkButton(
+            recommendation,
+            text="Use Suggestion",
+            command=self._apply_suggested_preset,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(12, "bold"),
+            height=32,
+            corner_radius=12,
+            width=120,
+        )
+        self.reapply_suggested_button.grid(row=0, column=1, rowspan=2, sticky="e", padx=14, pady=12)
+
         preset_row = ctk.CTkFrame(self.cleanup_card, fg_color="transparent")
         preset_row.pack(fill="x", padx=18, pady=(0, 14))
         preset_row.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(preset_row, text="Preset", font=ui_font(13, "bold"), text_color=COLORS["text_secondary"]).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ctk.CTkLabel(preset_row, text="Current Preset", font=ui_font(13, "bold"), text_color=COLORS["text_secondary"]).grid(row=0, column=0, sticky="w", padx=(0, 10))
         self.preset_menu = ctk.CTkOptionMenu(
             preset_row,
             variable=self.preset_var,
@@ -1476,7 +1548,7 @@ class GlideAudioApp(ctk.CTk):
 
         self.refresh_preview_button = ctk.CTkButton(
             second_row,
-            text="Refresh Preview",
+            text="Build Preview",
             command=self._start_preview_generation,
             fg_color=COLORS["primary"],
             hover_color=COLORS["primary_hover"],
@@ -1713,7 +1785,7 @@ class GlideAudioApp(ctk.CTk):
 
         self.output_button = ctk.CTkButton(
             button_row,
-            text="Choose Output",
+            text="Choose Save Location",
             command=self._choose_output_path,
             fg_color="transparent",
             hover_color=COLORS["surface_alt"],
@@ -1727,7 +1799,7 @@ class GlideAudioApp(ctk.CTk):
 
         self.export_button = ctk.CTkButton(
             button_row,
-            text="Export",
+            text="Export Final File",
             command=self._start_export,
             fg_color=COLORS["primary"],
             hover_color=COLORS["primary_hover"],
@@ -1756,6 +1828,15 @@ class GlideAudioApp(ctk.CTk):
         self.progress.set(0.0)
 
     def _build_batch_section(self) -> None:
+        ctk.CTkLabel(
+            self.batch_card,
+            text="Optional after the single-file result sounds right. Batch exports reuse the current cleanup and export settings.",
+            font=ui_font(12),
+            text_color=COLORS["text_secondary"],
+            justify="left",
+            wraplength=760,
+        ).pack(fill="x", padx=18, pady=(0, 12))
+
         controls_top = ctk.CTkFrame(self.batch_card, fg_color="transparent")
         controls_top.pack(fill="x", padx=18, pady=(0, 10))
 
@@ -1763,8 +1844,10 @@ class GlideAudioApp(ctk.CTk):
             controls_top,
             text="Add Files",
             command=self._add_batch_files,
-            fg_color=COLORS["primary"],
-            hover_color=COLORS["primary_hover"],
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
             font=ui_font(13, "bold"),
             height=36,
             corner_radius=14,
@@ -2110,13 +2193,17 @@ class GlideAudioApp(ctk.CTk):
         self.preview_original_samples = np.asarray([], dtype=np.float32)
         self.preview_cleaned_samples = np.asarray([], dtype=np.float32)
         self.output_path = None
+        self.suggested_preset_name = None
+        self.suggested_preset_var.set("Inspecting the source...")
         self.output_label.configure(text=str(self.output_dir))
         self.source_status_var.set(f"Loading {shorten_middle(path.name, 44)} ...")
         self.source_meta_var.set("Inspecting file and audio stream.")
         self.audio_meta_var.set(str(path))
+        self.preview_is_stale = True
         self._set_preview_feedback("Analyzing source before preview generation.", "Analyzing")
-        self.preset_hint_var.set("Inspecting the source to suggest a starting preset.")
-        self.export_status_var.set("Choose an output mode and render the repaired file.")
+        self.preset_hint_var.set("Inspecting the source to recommend the simplest good starting point.")
+        self._set_next_step("GlideAudio is inspecting the source and preparing a recommended preview.")
+        self.export_status_var.set("Step 3: after the preview sounds right, choose where to save the final cleaned file.")
         self._set_source_placeholder()
         self._set_preview_placeholders()
         self._start_analysis()
@@ -2211,8 +2298,12 @@ class GlideAudioApp(ctk.CTk):
         self.metric_vars["speech"].set(f"{diagnostics.speech_presence} ({int(round(diagnostics.speech_score * 100))}%)")
 
         suggested_preset, suggestion_reason = suggest_cleanup_preset(info, diagnostics)
+        self.suggested_preset_name = suggested_preset
+        self.suggested_preset_var.set(suggested_preset)
         self._apply_preset(suggested_preset)
-        self.preset_hint_var.set(f"Suggested start: {suggested_preset} because {suggestion_reason}.")
+        self.preset_hint_var.set(
+            f"Why this start works: {suggestion_reason}. Leave the sliders here unless something still sounds off."
+        )
 
         export_modes = [EXPORT_MODE_AUDIO, EXPORT_MODE_VIDEO] if info.has_video else [EXPORT_MODE_AUDIO]
         self.export_mode_menu.configure(values=export_modes)
@@ -2222,11 +2313,11 @@ class GlideAudioApp(ctk.CTk):
 
         self._set_mode("idle")
         self._set_status("Analysis ready.")
+        self._set_next_step("GlideAudio is building a quick compare loop. When it finishes, listen to Original and Cleaned.")
         self._set_preview_feedback(
-            "Diagnostics are ready. Generate the loop to audition original vs cleaned audio.",
+            "Diagnostics are ready. GlideAudio is preparing a quick loop so you can compare Original and Cleaned.",
             "Ready",
         )
-        self.export_status_var.set("Export cleaned audio, or mux it back into MP4 if the source includes video.")
         self._log(
             f"Analysis ready | Peak {diagnostics.peak_dbfs:.1f} dBFS | "
             f"Loudness {diagnostics.average_lufs:.1f} LUFS | "
@@ -2257,9 +2348,11 @@ class GlideAudioApp(ctk.CTk):
         preview_length = min(parse_preview_length(self.preview_length_var.get()), self.media_info.duration)
         start = clamp(start, 0.0, max(0.0, self.media_info.duration - preview_length))
         filter_chain = self._current_filter_chain()
+        self.preview_is_stale = True
 
         self._set_mode("preview")
         self._set_status("Building A/B preview...")
+        self._set_next_step("Wait for the compare loop, then listen to Original and Cleaned before you export.")
         self._set_preview_feedback(
             f"Rendering {preview_length:.0f}-second preview loop from {format_seconds(start)} for A/B listening.",
             "Generating",
@@ -2349,13 +2442,15 @@ class GlideAudioApp(ctk.CTk):
         )
         self.preview_original_caption_var.set(self.preview_original_payload[2])
         self.preview_cleaned_caption_var.set(self.preview_cleaned_payload[2])
+        self.preview_is_stale = False
         self._refresh_preview_images()
         self._set_preview_feedback(
-            f"Preview ready. Audition {preview_length:.0f} seconds from {format_seconds(start)} as original or cleaned audio.",
+            f"Preview ready. Audition {preview_length:.0f} seconds from {format_seconds(start)} as Original and Cleaned.",
             "Ready",
         )
         self._set_mode("idle")
         self._set_status("Preview ready.")
+        self._set_next_step("Listen to Original and Cleaned. If the result sounds right, export the final file.")
         self._log(
             f"A/B preview ready | Start {format_seconds(start)} | Length {preview_length:.0f}s | "
             f"Preset {self.preset_var.get()}"
@@ -2518,6 +2613,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_start_var.set(current)
         self.preview_slider.configure(from_=0.0, to=max(max_start, 1e-3), number_of_steps=max(1, int(max(max_start, 0.0) * 4) + 1))
         self.preview_time_label.configure(text=format_seconds(current))
+        self.preview_is_stale = True
         self._persist_app_settings()
         if self.mode == "idle" and self.media_info is not None:
             self.after(40, self._start_preview_generation)
@@ -2526,8 +2622,11 @@ class GlideAudioApp(ctk.CTk):
         value = self.slider_vars[key].get()
         self.slider_value_labels[key].configure(text=f"{int(round(value * 100))}%")
         self.preset_var.set("Custom")
+        self.preview_is_stale = True
         if self.media_info is not None and self.mode == "idle":
-            self._set_preview_feedback("Settings changed. Refresh the preview loop to hear the update.", "Needs Refresh")
+            self._set_preview_feedback("Settings changed. Update the preview loop to hear the new cleanup.", "Needs Refresh")
+            self._set_next_step("Update the preview, then compare Original and Cleaned again before exporting.")
+            self._refresh_action_states()
 
     def _apply_preset(self, preset_name: str) -> None:
         preset = PRESET_VALUES.get(preset_name)
@@ -2537,12 +2636,14 @@ class GlideAudioApp(ctk.CTk):
             self.slider_vars[key].set(preset[key])
             self.slider_value_labels[key].configure(text=f"{int(round(preset[key] * 100))}%")
         self.preset_var.set(preset_name)
+        self.preview_is_stale = True
         self._persist_app_settings()
         if self.media_info is not None and self.mode == "idle":
             self._set_preview_feedback(
-                f"Preset changed to {preset_name}. Rebuilding the preview loop.",
+                f"Preset changed to {preset_name}. GlideAudio is rebuilding the preview loop.",
                 "Generating",
             )
+            self._set_next_step("GlideAudio is rebuilding the compare loop with the updated preset.")
             self.after(40, self._start_preview_generation)
 
     def _on_export_mode_changed(self) -> None:
@@ -2553,6 +2654,7 @@ class GlideAudioApp(ctk.CTk):
             self.export_format_var.set(format_values[0])
         self.output_path = None
         self.output_label.configure(text=str(self.output_dir))
+        self._update_export_guidance()
         self._persist_app_settings()
 
     def _on_export_format_changed(self) -> None:
@@ -2563,10 +2665,12 @@ class GlideAudioApp(ctk.CTk):
     def _on_loudness_target_changed(self) -> None:
         self._persist_app_settings()
         if self.media_info is not None and self.mode == "idle":
+            self.preview_is_stale = True
             self._set_preview_feedback(
                 f"Loudness target changed to {self.loudness_target_var.get()}. Rebuilding the preview loop.",
                 "Generating",
             )
+            self._set_next_step("GlideAudio is rebuilding the compare loop with the updated loudness target.")
             self.after(40, self._start_preview_generation)
 
     def _choose_output_path(self) -> None:
@@ -2598,6 +2702,7 @@ class GlideAudioApp(ctk.CTk):
             self.output_path = Path(chosen)
             self.output_dir = self.output_path.parent
             self.output_label.configure(text=str(self.output_path))
+            self._set_next_step("Save location is ready. Export the final file when the preview sounds right.")
             self._persist_app_settings()
 
     def _render_output_to_path(
@@ -2677,12 +2782,14 @@ class GlideAudioApp(ctk.CTk):
         self.active_process = None
         if cancelled:
             self._set_status("Batch queue stopped.")
+            self._set_next_step("Review the queue state, then rerun it or go back to single-file export.")
             self._update_batch_status(f"Queue stopped after {successes + failures}/{total} file(s).")
             self.export_status_var.set("Batch queue stopped before finishing every file.")
             self._log("Batch queue stopped.")
             return
 
         self._set_status("Batch queue complete.")
+        self._set_next_step("Review any failed queue items, or load another source for single-file cleanup.")
         self.export_status_var.set(f"Batch queue finished. {successes} succeeded, {failures} failed.")
         self._update_batch_status(f"Queue finished. {successes} succeeded, {failures} failed.")
         self._log(f"Batch queue finished. {successes} succeeded, {failures} failed.")
@@ -2716,6 +2823,7 @@ class GlideAudioApp(ctk.CTk):
         self.progress.set(0.0)
         self._set_mode("batch")
         self._set_status("Running batch queue...")
+        self._set_next_step("GlideAudio is batch rendering with the current cleanup and export settings.")
         self.export_status_var.set(f"Batch rendering {len(queue_items)} queued file(s) with the current cleanup settings.")
         self._update_batch_status(f"Running queue 0/{len(queue_items)}...")
         self._persist_app_settings()
@@ -2852,6 +2960,7 @@ class GlideAudioApp(ctk.CTk):
             if not overwrite:
                 self.export_status_var.set("Export cancelled before render. Choose a different file name or folder.")
                 self._set_status("Export cancelled.")
+                self._set_next_step("Choose another save location, then export the final file when you are ready.")
                 return
 
         filter_chain = self._current_filter_chain()
@@ -2862,6 +2971,7 @@ class GlideAudioApp(ctk.CTk):
         self.progress.set(0.0)
         self._set_mode("export")
         self._set_status("Exporting cleaned output...")
+        self._set_next_step("GlideAudio is rendering the final file. Wait for verification before closing the app.")
         self.export_status_var.set(f"Rendering {output_path.name} ...")
         self._log(f"Starting export -> {output_path}")
 
@@ -2919,6 +3029,7 @@ class GlideAudioApp(ctk.CTk):
         self.export_status_var.set(f"Export complete: {output_path.name}")
         self._set_mode("idle")
         self._set_status("Export complete.")
+        self._set_next_step("Export another format, queue more files, or load a new source.")
         self._log(f"Export complete: {output_path}")
         self._log(summary)
         messagebox.showinfo(APP_NAME, f"Saved cleaned output to:\n{output_path}\n\n{summary}")
@@ -2928,6 +3039,7 @@ class GlideAudioApp(ctk.CTk):
         self.export_status_var.set("Export cancelled.")
         self._set_mode("idle")
         self._set_status("Export cancelled.")
+        self._set_next_step("Choose another save location or export format when you are ready to try again.")
         self._log("Export cancelled.")
 
     def _fail_export(self, error_text: str, trace_text: str, *, output_path: Path, format_name: str) -> None:
@@ -2938,6 +3050,7 @@ class GlideAudioApp(ctk.CTk):
         friendly = friendly_export_error(error_text, output_path=output_path, format_name=format_name)
         self.export_status_var.set("Export failed. Review the message and try again.")
         self._set_status("Export failed.")
+        self._set_next_step("Review the error, then try a simpler format like WAV or choose a different save location.")
         self._log(trace_text)
         self._log(f"Export failed: {friendly}")
         messagebox.showerror(APP_NAME, friendly)
@@ -2974,6 +3087,9 @@ class GlideAudioApp(ctk.CTk):
         self.preview_slider.configure(state="normal" if has_source and not busy else "disabled")
         self.preview_length_menu.configure(state="normal" if has_source and not busy else "disabled")
         self.preset_menu.configure(state="normal" if not busy else "disabled")
+        self.reapply_suggested_button.configure(
+            state="normal" if self.suggested_preset_name is not None and has_source and not busy else "disabled"
+        )
         self.export_mode_menu.configure(state="normal" if has_source and not busy else "disabled")
         self.export_format_menu.configure(state="normal" if has_source and not busy else "disabled")
         self.loudness_target_menu.configure(state="normal" if has_source and not busy else "disabled")
@@ -2984,10 +3100,24 @@ class GlideAudioApp(ctk.CTk):
         self.batch_clear_button.configure(state="normal" if has_batch_items and not busy else "disabled")
         self.batch_run_button.configure(state="normal" if has_batch_items and not busy else "disabled")
         self.batch_stop_button.configure(state="normal" if self.mode == "batch" else "disabled")
+        self._update_preview_refresh_button(has_preview=has_preview)
         self._update_preview_transport_buttons(has_preview=has_preview, busy=busy)
         if not can_video and self.export_mode_var.get() == EXPORT_MODE_VIDEO:
             self.export_mode_var.set(EXPORT_MODE_AUDIO)
             self._on_export_mode_changed()
+
+    def _update_preview_refresh_button(self, *, has_preview: Optional[bool] = None) -> None:
+        if not hasattr(self, "refresh_preview_button"):
+            return
+        if has_preview is None:
+            has_preview = self.preview_original_wav is not None and self.preview_cleaned_wav is not None
+        if not has_preview:
+            label = "Build Preview"
+        elif self.preview_is_stale:
+            label = "Update Preview"
+        else:
+            label = "Rebuild Preview"
+        self.refresh_preview_button.configure(text=label)
 
     def _update_preview_transport_buttons(self, has_preview: Optional[bool] = None, busy: Optional[bool] = None) -> None:
         if not hasattr(self, "preview_original_toggle_button") or not hasattr(self, "preview_cleaned_toggle_button"):
@@ -3031,6 +3161,21 @@ class GlideAudioApp(ctk.CTk):
     def _set_preview_feedback(self, message: str, state_label: str) -> None:
         self.preview_status_var.set(message)
         self.preview_transport_var.set(state_label)
+
+    def _apply_suggested_preset(self) -> None:
+        if self.suggested_preset_name is None:
+            return
+        self._apply_preset(self.suggested_preset_name)
+
+    def _update_export_guidance(self) -> None:
+        mode = self.export_mode_var.get()
+        if self.media_info is None:
+            self.export_status_var.set("Step 3: once the preview sounds right, choose where to save the final cleaned file.")
+            return
+        if mode == EXPORT_MODE_VIDEO and self.media_info.has_video:
+            self.export_status_var.set("Export a repaired MP4. GlideAudio keeps the original video and swaps in the cleaned audio.")
+            return
+        self.export_status_var.set("Export a cleaned audio file. WAV is the safest choice if you want the most reliable output.")
 
     def _apply_scaled_image(
         self,
@@ -3136,6 +3281,8 @@ class GlideAudioApp(ctk.CTk):
             title="Source Preview",
             subtitle="Load media to inspect waveform or poster frame.",
         )
+        self.suggested_preset_name = None
+        self.suggested_preset_var.set("Waiting for analysis.")
         self.source_preview_caption_var.set("Load media to inspect waveform or poster frame.")
         self._refresh_source_image()
 
@@ -3143,19 +3290,20 @@ class GlideAudioApp(ctk.CTk):
         self.preview_active_variant = None
         self.preview_last_variant = None
         self.preview_playback_state = "stopped"
+        self.preview_is_stale = True
         self.preview_original_payload = (
             np.asarray([], dtype=np.float32),
             "Original",
-            "Generate the preview loop to hear the untouched segment.",
+            "Original reference loop appears here after analysis.",
         )
         self.preview_cleaned_payload = (
             np.asarray([], dtype=np.float32),
             "Cleaned",
-            "The processed loop will show here after preview render.",
+            "Cleaned loop appears here after preview render.",
         )
         self.preview_original_caption_var.set(self.preview_original_payload[2])
         self.preview_cleaned_caption_var.set(self.preview_cleaned_payload[2])
-        self._set_preview_feedback("Preview the original and cleaned loop after analysis.", "Idle")
+        self._set_preview_feedback("GlideAudio will build a short original-vs-cleaned preview after analysis.", "Idle")
         self._refresh_preview_images()
 
     def _cleanup_preview_files(self) -> None:
@@ -3169,6 +3317,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_active_variant = None
         self.preview_last_variant = None
         self.preview_playback_state = "stopped"
+        self.preview_is_stale = True
 
     def _clear_log(self) -> None:
         self.log_box.configure(state="normal")
@@ -3188,6 +3337,9 @@ class GlideAudioApp(ctk.CTk):
             save_app_settings(settings)
         except Exception as exc:
             self._log(f"Could not save settings: {exc}")
+
+    def _set_next_step(self, message: str) -> None:
+        self.next_step_var.set(message)
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -3222,6 +3374,7 @@ class GlideAudioApp(ctk.CTk):
         self.progress.set(0.0)
         self._set_mode("idle")
         self._set_status("Task failed.")
+        self._set_next_step("Review the error, then retry the last step or load a different source file.")
         self._log(trace_text)
         messagebox.showerror(APP_NAME, error_text)
 
