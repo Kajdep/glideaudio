@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Persist session settings
-  Linear: `ALL-47`
-  Save last-used preset, preview length, loudness target, output folder, and export mode between launches.
+- [ ] Add batch queue support
+  Linear: `ALL-50`
+  Support multiple source files with a simple queue so repeated cleanup/export runs do not require one-file-at-a-time setup.
 
 ## Done
 
@@ -28,12 +28,12 @@
   Linear: `ALL-49`
   Strengthened the analysis heuristics, added a safer starting-preset recommendation, and reduced misleading speech/noise guesses.
 
+- [x] Persist session settings
+  Linear: `ALL-47`
+  GlideAudio now remembers the key session choices between launches so creator workflows resume where they left off.
+
 ## Queue
 
 - [ ] Finish packaging and release assets
   Linear: `ALL-48`
   Add branded icon assets, privacy policy, store collateral, and a final Windows release build pass.
-
-- [ ] Add batch queue support
-  Linear: `ALL-50`
-  Support multiple source files with a simple queue so repeated cleanup/export runs do not require one-file-at-a-time setup.

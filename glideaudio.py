@@ -1027,6 +1027,30 @@ def verify_rendered_output(
     return info
 
 
+def app_settings_path() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return base / APP_NAME / "settings.json"
+    return Path.home() / f".{APP_NAME.lower()}" / "settings.json"
+
+
+def load_app_settings() -> dict[str, str]:
+    path = app_settings_path()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_app_settings(settings: dict[str, str]) -> None:
+    path = app_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
 class GlideAudioApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -1072,7 +1096,10 @@ class GlideAudioApp(ctk.CTk):
         self.worker_thread: Optional[threading.Thread] = None
         self.ui_queue: queue.SimpleQueue = queue.SimpleQueue()
 
-        self.output_dir = Path.home() / "Videos" / "GlideAudio Exports"
+        self.app_settings = load_app_settings()
+        default_output_dir = Path.home() / "Videos" / "GlideAudio Exports"
+        saved_output_dir = self.app_settings.get("output_dir")
+        self.output_dir = Path(saved_output_dir) if saved_output_dir else default_output_dir
         self.output_path: Optional[Path] = None
 
         self.source_status_var = ctk.StringVar(value="Drop a video or audio file here, or browse to begin.")
@@ -1087,11 +1114,21 @@ class GlideAudioApp(ctk.CTk):
         self.export_status_var = ctk.StringVar(value="Choose an output mode and render the repaired file.")
         self.status_var = ctk.StringVar(value="Ready.")
 
-        self.preset_var = ctk.StringVar(value="Clean Voice")
-        self.preview_length_var = ctk.StringVar(value="10 sec")
-        self.export_mode_var = ctk.StringVar(value=EXPORT_MODE_AUDIO)
-        self.export_format_var = ctk.StringVar(value="WAV")
-        self.loudness_target_var = ctk.StringVar(value="YouTube / Social (-14 LUFS)")
+        saved_preset = self.app_settings.get("preset")
+        saved_preview_length = self.app_settings.get("preview_length")
+        saved_export_mode = self.app_settings.get("export_mode")
+        saved_format = self.app_settings.get("export_format")
+        saved_target = self.app_settings.get("loudness_target")
+        self.preset_var = ctk.StringVar(value=saved_preset if saved_preset in PRESET_VALUES else "Clean Voice")
+        self.preview_length_var = ctk.StringVar(value=saved_preview_length if saved_preview_length in PREVIEW_LENGTHS else "10 sec")
+        self.export_mode_var = ctk.StringVar(value=saved_export_mode if saved_export_mode in EXPORT_FORMATS else EXPORT_MODE_AUDIO)
+        default_format = self.export_mode_var.get()
+        self.export_format_var = ctk.StringVar(
+            value=saved_format if saved_format in EXPORT_FORMATS.get(default_format, []) else EXPORT_FORMATS[default_format][0]
+        )
+        self.loudness_target_var = ctk.StringVar(
+            value=saved_target if saved_target in LOUDNESS_TARGETS else "YouTube / Social (-14 LUFS)"
+        )
         self.preview_start_var = ctk.DoubleVar(value=0.0)
 
         self.slider_vars = {key: ctk.DoubleVar(value=PRESET_VALUES["Clean Voice"][key]) for key, _ in SLIDER_KEYS}
@@ -1108,7 +1145,7 @@ class GlideAudioApp(ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(40, self._drain_ui_events)
-        self._apply_preset("Clean Voice")
+        self._apply_preset(self.preset_var.get())
         self._set_source_placeholder()
         self._set_preview_placeholders()
         self._refresh_action_states()
@@ -1594,6 +1631,7 @@ class GlideAudioApp(ctk.CTk):
             grid,
             variable=self.export_format_var,
             values=EXPORT_FORMATS[EXPORT_MODE_AUDIO],
+            command=lambda _value: self._on_export_format_changed(),
             fg_color=COLORS["bg_tertiary"],
             button_color=COLORS["primary"],
             button_hover_color=COLORS["primary_hover"],
@@ -1607,6 +1645,7 @@ class GlideAudioApp(ctk.CTk):
             grid,
             variable=self.loudness_target_var,
             values=list(LOUDNESS_TARGETS.keys()),
+            command=lambda _value: self._on_loudness_target_changed(),
             fg_color=COLORS["bg_tertiary"],
             button_color=COLORS["primary"],
             button_hover_color=COLORS["primary_hover"],
@@ -2151,6 +2190,7 @@ class GlideAudioApp(ctk.CTk):
 
     def _on_preview_length_changed(self) -> None:
         if self.media_info is None:
+            self._persist_app_settings()
             return
         preview_length = min(parse_preview_length(self.preview_length_var.get()), self.media_info.duration)
         max_start = max(0.0, self.media_info.duration - preview_length)
@@ -2158,6 +2198,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_start_var.set(current)
         self.preview_slider.configure(from_=0.0, to=max(max_start, 1e-3), number_of_steps=max(1, int(max(max_start, 0.0) * 4) + 1))
         self.preview_time_label.configure(text=format_seconds(current))
+        self._persist_app_settings()
         if self.mode == "idle" and self.media_info is not None:
             self.after(40, self._start_preview_generation)
 
@@ -2176,6 +2217,7 @@ class GlideAudioApp(ctk.CTk):
             self.slider_vars[key].set(preset[key])
             self.slider_value_labels[key].configure(text=f"{int(round(preset[key] * 100))}%")
         self.preset_var.set(preset_name)
+        self._persist_app_settings()
         if self.media_info is not None and self.mode == "idle":
             self._set_preview_feedback(
                 f"Preset changed to {preset_name}. Rebuilding the preview loop.",
@@ -2191,6 +2233,21 @@ class GlideAudioApp(ctk.CTk):
             self.export_format_var.set(format_values[0])
         self.output_path = None
         self.output_label.configure(text=str(self.output_dir))
+        self._persist_app_settings()
+
+    def _on_export_format_changed(self) -> None:
+        self.output_path = None
+        self.output_label.configure(text=str(self.output_dir))
+        self._persist_app_settings()
+
+    def _on_loudness_target_changed(self) -> None:
+        self._persist_app_settings()
+        if self.media_info is not None and self.mode == "idle":
+            self._set_preview_feedback(
+                f"Loudness target changed to {self.loudness_target_var.get()}. Rebuilding the preview loop.",
+                "Generating",
+            )
+            self.after(40, self._start_preview_generation)
 
     def _choose_output_path(self) -> None:
         if self.media_path is None:
@@ -2215,7 +2272,9 @@ class GlideAudioApp(ctk.CTk):
         )
         if chosen:
             self.output_path = Path(chosen)
+            self.output_dir = self.output_path.parent
             self.output_label.configure(text=str(self.output_path))
+            self._persist_app_settings()
 
     def _start_export(self) -> None:
         if self.media_info is None or self.media_path is None or self.mode != "idle":
@@ -2584,6 +2643,20 @@ class GlideAudioApp(ctk.CTk):
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
 
+    def _persist_app_settings(self) -> None:
+        settings = {
+            "preset": self.preset_var.get(),
+            "preview_length": self.preview_length_var.get(),
+            "loudness_target": self.loudness_target_var.get(),
+            "output_dir": str(self.output_dir),
+            "export_mode": self.export_mode_var.get(),
+            "export_format": self.export_format_var.get(),
+        }
+        try:
+            save_app_settings(settings)
+        except Exception as exc:
+            self._log(f"Could not save settings: {exc}")
+
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
 
@@ -2628,6 +2701,7 @@ class GlideAudioApp(ctk.CTk):
                 process.terminate()
             except Exception:
                 pass
+        self._persist_app_settings()
         self._stop_preview_audio()
         self._cleanup_preview_files()
         self.destroy()
