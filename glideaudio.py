@@ -375,7 +375,17 @@ def probe_media(path: Path, ffprobe_path: str) -> MediaInfo:
 
     payload = json.loads(result.stdout or "{}")
     streams = payload.get("streams", [])
-    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    video_stream = next(
+        (
+            stream
+            for stream in streams
+            if stream.get("codec_type") == "video"
+            and not bool((stream.get("disposition") or {}).get("attached_pic"))
+            and int(stream.get("width") or 0) > 0
+            and int(stream.get("height") or 0) > 0
+        ),
+        None,
+    )
     audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
 
     duration = float(
@@ -809,6 +819,8 @@ def build_audio_export_command(
         "-hide_banner",
         "-i",
         str(input_path),
+        "-map",
+        "0:a:0",
         "-vn",
         "-af",
         filter_chain,
@@ -843,6 +855,7 @@ def build_video_export_command(
         "0:v:0",
         "-map",
         "0:a:0",
+        "-shortest",
         "-c:v",
         "copy",
         "-af",
@@ -908,6 +921,53 @@ def run_ffmpeg_with_progress(
     finally:
         if process_callback is not None:
             process_callback(None)
+
+
+def friendly_export_error(detail: str, *, output_path: Optional[Path] = None, format_name: Optional[str] = None) -> str:
+    lowered = detail.lower()
+    if "permission denied" in lowered or "access is denied" in lowered:
+        location = f"\n{output_path}" if output_path is not None else ""
+        return (
+            "GlideAudio could not write the export file. Close any app using that file and choose a writable folder."
+            f"{location}"
+        )
+    if "unknown encoder" in lowered or "encoder not found" in lowered:
+        format_hint = f" for {format_name}" if format_name else ""
+        return f"FFmpeg on this machine cannot encode the selected export format{format_hint}. Try WAV or install a fuller FFmpeg build."
+    if "invalid argument" in lowered:
+        return "The selected export settings produced an invalid FFmpeg command. Try another format or output path."
+    if "no such file or directory" in lowered:
+        return "GlideAudio could not find the selected source file or export folder."
+    if "error opening output" in lowered:
+        return "GlideAudio could not open the export destination. Check the file name, extension, and folder permissions."
+    if "conversion failed" in lowered:
+        return "FFmpeg failed while rendering the cleaned output. Try a simpler format like WAV and review the source media."
+    return detail.strip() or "FFmpeg failed while exporting the cleaned output."
+
+
+def verify_rendered_output(
+    output_path: Path,
+    *,
+    ffprobe_path: str,
+    expected_video: bool,
+    expected_audio: bool,
+    source_duration: float,
+) -> MediaInfo:
+    if not output_path.exists():
+        raise RuntimeError("The export finished without creating an output file.")
+    if output_path.stat().st_size <= 0:
+        raise RuntimeError("The export file was created but is empty.")
+
+    info = probe_media(output_path, ffprobe_path)
+    if expected_audio and not info.has_audio:
+        raise RuntimeError("The exported file does not contain a readable audio stream.")
+    if expected_video and not info.has_video:
+        raise RuntimeError("The repaired video export does not contain a readable video stream.")
+    if expected_video and abs(info.duration - source_duration) > 1.5:
+        raise RuntimeError("The repaired video duration does not match the source closely enough to trust the export.")
+    if not expected_video and info.duration <= 0.1:
+        raise RuntimeError("The cleaned audio export is too short to trust.")
+    return info
 
 
 class GlideAudioApp(ctk.CTk):
@@ -2092,17 +2152,36 @@ class GlideAudioApp(ctk.CTk):
             if self.output_path is None:
                 return
 
+        output_path = self.output_path
+        if output_path.resolve().samefile(self.media_path) if output_path.exists() else output_path.resolve(strict=False) == self.media_path.resolve():
+            messagebox.showerror(APP_NAME, "Choose a different export path than the source file.")
+            return
+
+        if output_path.exists():
+            overwrite = messagebox.askyesno(
+                APP_NAME,
+                f"Replace the existing export?\n\n{output_path}",
+                icon="warning",
+            )
+            if not overwrite:
+                self.export_status_var.set("Export cancelled before render. Choose a different file name or folder.")
+                self._set_status("Export cancelled.")
+                return
+
         filter_chain = self._current_filter_chain()
         ffmpeg_path = self._get_ffmpeg_path()
-        output_path = self.output_path
+        ffprobe_path = self._get_ffprobe_path()
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_output_path = output_path.with_name(f"{output_path.stem}.glideaudio-render{output_path.suffix}")
+        if temp_output_path.exists():
+            temp_output_path.unlink(missing_ok=True)
 
         command = (
-            build_video_export_command(self.media_path, output_path, ffmpeg_path, filter_chain=filter_chain)
+            build_video_export_command(self.media_path, temp_output_path, ffmpeg_path, filter_chain=filter_chain)
             if mode == EXPORT_MODE_VIDEO
             else build_audio_export_command(
                 self.media_path,
-                output_path,
+                temp_output_path,
                 ffmpeg_path,
                 filter_chain=filter_chain,
                 format_name=self.export_format_var.get(),
@@ -2127,12 +2206,30 @@ class GlideAudioApp(ctk.CTk):
                     progress_callback=self._queue_progress,
                     process_callback=self._set_active_process,
                 )
-                self._post_ui(lambda: self._complete_export(output_path))
+                verified_info = verify_rendered_output(
+                    temp_output_path,
+                    ffprobe_path=ffprobe_path,
+                    expected_video=mode == EXPORT_MODE_VIDEO,
+                    expected_audio=True,
+                    source_duration=self.media_info.duration,
+                )
+                if output_path.exists():
+                    output_path.unlink()
+                temp_output_path.replace(output_path)
+                self._post_ui(lambda info=verified_info: self._complete_export(output_path, info))
             except Exception as exc:
+                temp_output_path.unlink(missing_ok=True)
                 if str(exc) == "cancelled":
                     self._post_ui(self._complete_cancelled_export)
                 else:
-                    self._post_ui(lambda error_text=str(exc), trace_text=traceback.format_exc(): self._fail_task(error_text, trace_text))
+                    self._post_ui(
+                        lambda error_text=str(exc), trace_text=traceback.format_exc(): self._fail_export(
+                            error_text,
+                            trace_text,
+                            output_path=output_path,
+                            format_name=self.export_format_var.get(),
+                        )
+                    )
 
         self.worker_thread = threading.Thread(target=worker, daemon=True)
         self.worker_thread.start()
@@ -2153,13 +2250,18 @@ class GlideAudioApp(ctk.CTk):
     def _set_active_process(self, process: Optional[subprocess.Popen]) -> None:
         self.active_process = process
 
-    def _complete_export(self, output_path: Path) -> None:
+    def _complete_export(self, output_path: Path, info: MediaInfo) -> None:
         self.progress.set(1.0)
+        if info.has_video:
+            summary = f"Verified repaired MP4 | {format_seconds(info.duration)} | {info.width}x{info.height}"
+        else:
+            summary = f"Verified cleaned audio | {format_seconds(info.duration)} | {info.audio_codec}"
         self.export_status_var.set(f"Export complete: {output_path.name}")
         self._set_mode("idle")
         self._set_status("Export complete.")
         self._log(f"Export complete: {output_path}")
-        messagebox.showinfo(APP_NAME, f"Saved cleaned output to:\n{output_path}")
+        self._log(summary)
+        messagebox.showinfo(APP_NAME, f"Saved cleaned output to:\n{output_path}\n\n{summary}")
 
     def _complete_cancelled_export(self) -> None:
         self.progress.set(0.0)
@@ -2167,6 +2269,18 @@ class GlideAudioApp(ctk.CTk):
         self._set_mode("idle")
         self._set_status("Export cancelled.")
         self._log("Export cancelled.")
+
+    def _fail_export(self, error_text: str, trace_text: str, *, output_path: Path, format_name: str) -> None:
+        self.cancel_event.clear()
+        self.active_process = None
+        self.progress.set(0.0)
+        self._set_mode("idle")
+        friendly = friendly_export_error(error_text, output_path=output_path, format_name=format_name)
+        self.export_status_var.set("Export failed. Review the message and try again.")
+        self._set_status("Export failed.")
+        self._log(trace_text)
+        self._log(f"Export failed: {friendly}")
+        messagebox.showerror(APP_NAME, friendly)
 
     def _queue_progress(self, value: float) -> None:
         self._post_ui(lambda: self.progress.set(clamp(value, 0.0, 1.0)))

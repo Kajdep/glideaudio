@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Harden export validation and failure handling
-  Linear: `ALL-46`
-  Improve overwrite behavior, surface codec and path errors clearly, and verify produced files before reporting success.
+- [ ] Improve diagnostics and preset suggestions
+  Linear: `ALL-49`
+  Make the speech/noise analysis more trustworthy and use it to suggest a starting preset automatically.
 
 ## Done
 
@@ -20,6 +20,10 @@
   Linear: `ALL-45`
   Retuned the cleanup presets and FFmpeg chain against clean speech, noisy-room speech, and audio-only samples so the defaults stay creator-friendly instead of DAW-heavy.
 
+- [x] Harden export validation and failure handling
+  Linear: `ALL-46`
+  Added explicit overwrite confirmation, verified temp renders before success, clearer FFmpeg/path failures, and safer repaired-video export checks.
+
 ## Queue
 
 - [ ] Persist session settings
@@ -29,10 +33,6 @@
 - [ ] Finish packaging and release assets
   Linear: `ALL-48`
   Add branded icon assets, privacy policy, store collateral, and a final Windows release build pass.
-
-- [ ] Improve diagnostics and preset suggestions
-  Linear: `ALL-49`
-  Make the speech/noise analysis more trustworthy and use it to suggest a starting preset automatically.
 
 - [ ] Add batch queue support
   Linear: `ALL-50`
