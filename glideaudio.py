@@ -20,7 +20,8 @@ from typing import Optional
 import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from tkinter import filedialog, messagebox
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
 
 if os.name == "nt":
@@ -169,6 +170,15 @@ class AudioDiagnostics:
     speech_presence: str
     speech_score: float
     clip_events: int
+
+
+@dataclass
+class BatchQueueItem:
+    item_id: str
+    path: Path
+    status: str = "Queued"
+    detail: str = "Waiting to export."
+    output_path: Optional[Path] = None
 
 
 def ui_font(size: int, weight: str = "normal"):
@@ -1051,6 +1061,23 @@ def save_app_settings(settings: dict[str, str]) -> None:
     path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
+def suggested_output_filename(source_path: Path, *, mode: str, format_name: str) -> str:
+    extension = format_name.lower() if mode == EXPORT_MODE_AUDIO else "mp4"
+    return f"{source_path.stem}_glideaudio_cleaned.{extension}"
+
+
+def next_available_output_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 class GlideAudioApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -1095,6 +1122,8 @@ class GlideAudioApp(ctk.CTk):
         self.cancel_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self.ui_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self.batch_queue: list[BatchQueueItem] = []
+        self.batch_queue_index = 0
 
         self.app_settings = load_app_settings()
         default_output_dir = Path.home() / "Videos" / "GlideAudio Exports"
@@ -1111,6 +1140,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_original_caption_var = ctk.StringVar(value="Generate the preview loop to hear the untouched segment.")
         self.preview_cleaned_caption_var = ctk.StringVar(value="The processed loop will show here after preview render.")
         self.preset_hint_var = ctk.StringVar(value="Load a source and GlideAudio will suggest a starting preset.")
+        self.batch_status_var = ctk.StringVar(value="Queue idle. Add files to batch export.")
         self.export_status_var = ctk.StringVar(value="Choose an output mode and render the repaired file.")
         self.status_var = ctk.StringVar(value="Ready.")
 
@@ -1204,7 +1234,10 @@ class GlideAudioApp(ctk.CTk):
         self.preview_card.pack(fill="both", expand=True, pady=(0, 14))
 
         self.export_card = self._build_card(right, "Export")
-        self.export_card.pack(fill="x")
+        self.export_card.pack(fill="x", pady=(0, 14))
+
+        self.batch_card = self._build_card(right, "Batch Queue")
+        self.batch_card.pack(fill="both")
 
         self.log_card = self._build_card(self, "Log")
         self.log_card.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 22))
@@ -1214,6 +1247,7 @@ class GlideAudioApp(ctk.CTk):
         self._build_cleanup_section()
         self._build_preview_section()
         self._build_export_section()
+        self._build_batch_section()
         self._build_log_section()
 
     def _build_card(self, parent, title: str) -> ctk.CTkFrame:
@@ -1231,7 +1265,7 @@ class GlideAudioApp(ctk.CTk):
         controls.pack(fill="x", padx=18, pady=(0, 12))
         controls.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkButton(
+        self.browse_button = ctk.CTkButton(
             controls,
             text="Browse Source",
             command=self._select_source,
@@ -1240,7 +1274,8 @@ class GlideAudioApp(ctk.CTk):
             font=ui_font(13, "bold"),
             height=38,
             corner_radius=14,
-        ).grid(row=0, column=0, sticky="ew")
+        )
+        self.browse_button.grid(row=0, column=0, sticky="ew")
 
         self.analyze_button = ctk.CTkButton(
             controls,
@@ -1720,6 +1755,183 @@ class GlideAudioApp(ctk.CTk):
         self.progress.pack(fill="x", padx=18, pady=(0, 18))
         self.progress.set(0.0)
 
+    def _build_batch_section(self) -> None:
+        controls_top = ctk.CTkFrame(self.batch_card, fg_color="transparent")
+        controls_top.pack(fill="x", padx=18, pady=(0, 10))
+
+        self.batch_add_button = ctk.CTkButton(
+            controls_top,
+            text="Add Files",
+            command=self._add_batch_files,
+            fg_color=COLORS["primary"],
+            hover_color=COLORS["primary_hover"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=118,
+        )
+        self.batch_add_button.pack(side="left")
+
+        self.batch_queue_current_button = ctk.CTkButton(
+            controls_top,
+            text="Queue Current",
+            command=self._queue_current_source,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=126,
+        )
+        self.batch_queue_current_button.pack(side="left", padx=(10, 0))
+
+        self.batch_load_button = ctk.CTkButton(
+            controls_top,
+            text="Load Selected",
+            command=self._load_selected_batch_item,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=126,
+        )
+        self.batch_load_button.pack(side="right")
+
+        controls_bottom = ctk.CTkFrame(self.batch_card, fg_color="transparent")
+        controls_bottom.pack(fill="x", padx=18, pady=(0, 10))
+
+        self.batch_remove_button = ctk.CTkButton(
+            controls_bottom,
+            text="Remove",
+            command=self._remove_selected_batch_items,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=96,
+        )
+        self.batch_remove_button.pack(side="left")
+
+        self.batch_clear_button = ctk.CTkButton(
+            controls_bottom,
+            text="Clear",
+            command=self._clear_batch_queue,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=88,
+        )
+        self.batch_clear_button.pack(side="left", padx=(10, 0))
+
+        self.batch_stop_button = ctk.CTkButton(
+            controls_bottom,
+            text="Stop Queue",
+            command=self._stop_batch_queue,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=112,
+        )
+        self.batch_stop_button.pack(side="right")
+
+        self.batch_run_button = ctk.CTkButton(
+            controls_bottom,
+            text="Run Queue",
+            command=self._start_batch_queue,
+            fg_color=COLORS["primary"],
+            hover_color=COLORS["primary_hover"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=112,
+        )
+        self.batch_run_button.pack(side="right", padx=(0, 10))
+
+        batch_table_frame = ctk.CTkFrame(
+            self.batch_card,
+            fg_color=COLORS["bg_tertiary"],
+            corner_radius=18,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
+        batch_table_frame.pack(fill="both", expand=True, padx=18, pady=(0, 10))
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("default")
+        except tk.TclError:
+            pass
+        style.configure(
+            "GlideAudio.Treeview",
+            background=COLORS["bg_tertiary"],
+            fieldbackground=COLORS["bg_tertiary"],
+            foreground=COLORS["text_primary"],
+            borderwidth=0,
+            rowheight=30,
+            font=mono_font(11),
+        )
+        style.configure(
+            "GlideAudio.Treeview.Heading",
+            background=COLORS["surface_alt"],
+            foreground=COLORS["text_secondary"],
+            relief="flat",
+            font=ui_font(12, "bold"),
+        )
+        style.map(
+            "GlideAudio.Treeview",
+            background=[("selected", COLORS["primary"])],
+            foreground=[("selected", COLORS["bg_primary"])],
+        )
+
+        tree_container = tk.Frame(batch_table_frame, background=COLORS["bg_tertiary"])
+        tree_container.pack(fill="both", expand=True, padx=12, pady=12)
+
+        self.batch_tree = ttk.Treeview(
+            tree_container,
+            style="GlideAudio.Treeview",
+            columns=("status", "source", "detail"),
+            show="headings",
+            selectmode="extended",
+            height=7,
+        )
+        self.batch_tree.heading("status", text="Status")
+        self.batch_tree.heading("source", text="Source")
+        self.batch_tree.heading("detail", text="Detail")
+        self.batch_tree.column("status", width=110, anchor="w", stretch=False)
+        self.batch_tree.column("source", width=250, anchor="w")
+        self.batch_tree.column("detail", width=360, anchor="w")
+        self.batch_tree.pack(side="left", fill="both", expand=True)
+        self.batch_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_action_states())
+
+        scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.batch_tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.batch_tree.configure(yscrollcommand=scrollbar.set)
+
+        ctk.CTkLabel(
+            self.batch_card,
+            textvariable=self.batch_status_var,
+            font=ui_font(13),
+            text_color=COLORS["text_secondary"],
+            justify="left",
+            wraplength=760,
+        ).pack(fill="x", padx=18, pady=(0, 18))
+
     def _build_log_section(self) -> None:
         self.log_box = ctk.CTkTextbox(
             self.log_card,
@@ -1762,7 +1974,113 @@ class GlideAudioApp(ctk.CTk):
             self.ffprobe_path = resolve_binary("ffprobe")
         return self.ffprobe_path
 
+    def _default_output_path(self, source_path: Path, *, mode: str, format_name: str, allow_existing: bool) -> Path:
+        candidate = self.output_dir / suggested_output_filename(source_path, mode=mode, format_name=format_name)
+        return candidate if allow_existing else next_available_output_path(candidate)
+
+    def _batch_item_values(self, item: BatchQueueItem) -> tuple[str, str, str]:
+        detail = item.detail
+        if item.output_path is not None:
+            detail = f"{detail} | {item.output_path.name}"
+        return (item.status, compact_path_text(item.path), detail)
+
+    def _upsert_batch_item(self, item: BatchQueueItem) -> None:
+        values = self._batch_item_values(item)
+        if self.batch_tree.exists(item.item_id):
+            self.batch_tree.item(item.item_id, values=values)
+        else:
+            self.batch_tree.insert("", "end", iid=item.item_id, values=values)
+
+    def _selected_batch_item_ids(self) -> list[str]:
+        return list(self.batch_tree.selection()) if hasattr(self, "batch_tree") else []
+
+    def _update_batch_status(self, message: str) -> None:
+        self.batch_status_var.set(message)
+
+    def _enqueue_paths(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+
+        existing = {
+            item.path.resolve(strict=False) if item.path.exists() else item.path
+            for item in self.batch_queue
+        }
+        added = 0
+        for raw_path in paths:
+            path = Path(raw_path)
+            if not path.exists() or not path.is_file():
+                self._log(f"Skipped queue add, file missing: {path}")
+                continue
+            normalized = path.resolve(strict=False)
+            if normalized in existing:
+                self._log(f"Skipped queue add, already queued: {path}")
+                continue
+            self.batch_queue_index += 1
+            item = BatchQueueItem(item_id=f"batch-{self.batch_queue_index}", path=normalized)
+            self.batch_queue.append(item)
+            self._upsert_batch_item(item)
+            existing.add(normalized)
+            added += 1
+
+        if added:
+            self._update_batch_status(f"{len(self.batch_queue)} file(s) queued. Batch exports reuse the current cleanup and export settings.")
+        else:
+            self._update_batch_status("No new files were added to the queue.")
+        self._refresh_action_states()
+
+    def _add_batch_files(self) -> None:
+        if self.mode != "idle":
+            return
+        chosen = filedialog.askopenfilenames(
+            title="Add Files to GlideAudio Batch Queue",
+            filetypes=[("Media Files", MEDIA_FILE_TYPES), ("All Files", "*.*")],
+        )
+        if chosen:
+            self._enqueue_paths([Path(path) for path in chosen])
+
+    def _queue_current_source(self) -> None:
+        if self.mode != "idle" or self.media_path is None:
+            return
+        self._enqueue_paths([self.media_path])
+
+    def _load_selected_batch_item(self) -> None:
+        if self.mode != "idle":
+            return
+        selection = self._selected_batch_item_ids()
+        if not selection:
+            return
+        item = next((queued for queued in self.batch_queue if queued.item_id == selection[0]), None)
+        if item is not None:
+            self._load_source(item.path)
+
+    def _remove_selected_batch_items(self) -> None:
+        if self.mode != "idle":
+            return
+        selection = set(self._selected_batch_item_ids())
+        if not selection:
+            return
+        self.batch_queue = [item for item in self.batch_queue if item.item_id not in selection]
+        for item_id in selection:
+            if self.batch_tree.exists(item_id):
+                self.batch_tree.delete(item_id)
+        if self.batch_queue:
+            self._update_batch_status(f"{len(self.batch_queue)} file(s) remain queued.")
+        else:
+            self._update_batch_status("Queue idle. Add files to batch export.")
+        self._refresh_action_states()
+
+    def _clear_batch_queue(self) -> None:
+        if self.mode != "idle":
+            return
+        self.batch_queue.clear()
+        for item_id in self.batch_tree.get_children():
+            self.batch_tree.delete(item_id)
+        self._update_batch_status("Queue idle. Add files to batch export.")
+        self._refresh_action_states()
+
     def _select_source(self) -> None:
+        if self.mode != "idle":
+            return
         chosen = filedialog.askopenfilename(
             title="Select Audio or Video Source",
             filetypes=[("Media Files", MEDIA_FILE_TYPES), ("All Files", "*.*")],
@@ -1771,6 +2089,8 @@ class GlideAudioApp(ctk.CTk):
             self._load_source(Path(chosen))
 
     def _on_drop(self, event) -> str:
+        if self.mode != "idle":
+            return COPY
         paths = parse_drop_paths(self, event.data)
         if not paths:
             return COPY
@@ -2256,7 +2576,11 @@ class GlideAudioApp(ctk.CTk):
 
         mode = self.export_mode_var.get()
         format_name = self.export_format_var.get().lower()
-        suggested_name = f"{self.media_path.stem}_glideaudio_cleaned.{format_name if mode == EXPORT_MODE_AUDIO else 'mp4'}"
+        suggested_name = suggested_output_filename(
+            self.media_path,
+            mode=mode,
+            format_name=self.export_format_var.get(),
+        )
         filetypes = [("All Files", "*.*")]
         if mode == EXPORT_MODE_AUDIO:
             filetypes = [(f"{self.export_format_var.get()} File", f"*.{format_name}")]
@@ -2275,6 +2599,230 @@ class GlideAudioApp(ctk.CTk):
             self.output_dir = self.output_path.parent
             self.output_label.configure(text=str(self.output_path))
             self._persist_app_settings()
+
+    def _render_output_to_path(
+        self,
+        *,
+        media_path: Path,
+        media_info: MediaInfo,
+        output_path: Path,
+        mode: str,
+        format_name: str,
+        filter_chain: str,
+        ffmpeg_path: str,
+        ffprobe_path: str,
+    ) -> MediaInfo:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_output_path = output_path.with_name(f"{output_path.stem}.glideaudio-render{output_path.suffix}")
+        if temp_output_path.exists():
+            temp_output_path.unlink(missing_ok=True)
+
+        command = (
+            build_video_export_command(media_path, temp_output_path, ffmpeg_path, filter_chain=filter_chain)
+            if mode == EXPORT_MODE_VIDEO
+            else build_audio_export_command(
+                media_path,
+                temp_output_path,
+                ffmpeg_path,
+                filter_chain=filter_chain,
+                format_name=format_name,
+            )
+        )
+        self._queue_log(" ".join(command))
+
+        try:
+            run_ffmpeg_with_progress(
+                command,
+                duration=media_info.duration,
+                cancel_event=self.cancel_event,
+                log_callback=self._queue_log,
+                progress_callback=self._queue_progress,
+                process_callback=self._set_active_process,
+            )
+            verified_info = verify_rendered_output(
+                temp_output_path,
+                ffprobe_path=ffprobe_path,
+                expected_video=mode == EXPORT_MODE_VIDEO,
+                expected_audio=True,
+                source_duration=media_info.duration,
+            )
+            if output_path.exists():
+                output_path.unlink()
+            temp_output_path.replace(output_path)
+            return verified_info
+        except Exception:
+            temp_output_path.unlink(missing_ok=True)
+            raise
+
+    def _set_batch_item_state(
+        self,
+        item_id: str,
+        *,
+        status: str,
+        detail: str,
+        output_path: Optional[Path] = None,
+    ) -> None:
+        item = next((queued for queued in self.batch_queue if queued.item_id == item_id), None)
+        if item is None:
+            return
+        item.status = status
+        item.detail = detail
+        item.output_path = output_path
+        self._upsert_batch_item(item)
+        self._refresh_action_states()
+
+    def _complete_batch_queue(self, *, cancelled: bool, successes: int, failures: int, total: int) -> None:
+        self.progress.set(0.0 if cancelled else 1.0)
+        self._set_mode("idle")
+        self.active_process = None
+        if cancelled:
+            self._set_status("Batch queue stopped.")
+            self._update_batch_status(f"Queue stopped after {successes + failures}/{total} file(s).")
+            self.export_status_var.set("Batch queue stopped before finishing every file.")
+            self._log("Batch queue stopped.")
+            return
+
+        self._set_status("Batch queue complete.")
+        self.export_status_var.set(f"Batch queue finished. {successes} succeeded, {failures} failed.")
+        self._update_batch_status(f"Queue finished. {successes} succeeded, {failures} failed.")
+        self._log(f"Batch queue finished. {successes} succeeded, {failures} failed.")
+
+    def _stop_batch_queue(self) -> None:
+        if self.mode != "batch":
+            return
+        self.cancel_event.set()
+        process = self.active_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        self._update_batch_status("Stopping the active batch queue...")
+        self.export_status_var.set("Stopping batch queue...")
+        self._log("Stop requested for the active batch queue.")
+
+    def _start_batch_queue(self) -> None:
+        if self.mode != "idle" or not self.batch_queue:
+            return
+
+        requested_mode = self.export_mode_var.get()
+        format_name = self.export_format_var.get()
+        filter_chain = self._current_filter_chain()
+        ffmpeg_path = self._get_ffmpeg_path()
+        ffprobe_path = self._get_ffprobe_path()
+        queue_items = [item for item in self.batch_queue]
+
+        self.cancel_event.clear()
+        self.progress.set(0.0)
+        self._set_mode("batch")
+        self._set_status("Running batch queue...")
+        self.export_status_var.set(f"Batch rendering {len(queue_items)} queued file(s) with the current cleanup settings.")
+        self._update_batch_status(f"Running queue 0/{len(queue_items)}...")
+        self._persist_app_settings()
+
+        for item in queue_items:
+            self._set_batch_item_state(item.item_id, status="Queued", detail="Waiting to export.", output_path=None)
+
+        def worker() -> None:
+            successes = 0
+            failures = 0
+            total = len(queue_items)
+            try:
+                for index, item in enumerate(queue_items, start=1):
+                    if self.cancel_event.is_set():
+                        break
+
+                    self._post_ui(
+                        lambda item_id=item.item_id, index=index, total=total: self._update_batch_status(
+                            f"Running queue {index}/{total}..."
+                        )
+                    )
+                    self._post_ui(
+                        lambda item_id=item.item_id: self._set_batch_item_state(
+                            item_id,
+                            status="Running",
+                            detail="Rendering with the current export settings.",
+                            output_path=None,
+                        )
+                    )
+                    try:
+                        info = probe_media(item.path, ffprobe_path)
+                        if not info.has_audio:
+                            raise RuntimeError("The queued file has no audio stream to clean.")
+
+                        actual_mode = requested_mode
+                        detail_prefix = "Using requested export mode."
+                        if requested_mode == EXPORT_MODE_VIDEO and not info.has_video:
+                            actual_mode = EXPORT_MODE_AUDIO
+                            detail_prefix = "Audio-only fallback from repaired video mode."
+
+                        output_path = self._default_output_path(
+                            item.path,
+                            mode=actual_mode,
+                            format_name=format_name,
+                            allow_existing=False,
+                        )
+                        verified_info = self._render_output_to_path(
+                            media_path=item.path,
+                            media_info=info,
+                            output_path=output_path,
+                            mode=actual_mode,
+                            format_name=format_name,
+                            filter_chain=filter_chain,
+                            ffmpeg_path=ffmpeg_path,
+                            ffprobe_path=ffprobe_path,
+                        )
+                        summary = (
+                            f"{detail_prefix} Saved {output_path.name}"
+                            if actual_mode == EXPORT_MODE_AUDIO
+                            else f"Saved repaired video {output_path.name}"
+                        )
+                        self._post_ui(
+                            lambda item_id=item.item_id, detail=summary, output_path=output_path: self._set_batch_item_state(
+                                item_id,
+                                status="Done",
+                                detail=detail,
+                                output_path=output_path,
+                            )
+                        )
+                        self._queue_log(f"Batch export complete: {output_path} ({verified_info.audio_codec})")
+                        successes += 1
+                    except Exception as exc:
+                        if str(exc) == "cancelled":
+                            break
+                        friendly = friendly_export_error(
+                            str(exc),
+                            output_path=self._default_output_path(
+                                item.path,
+                                mode=EXPORT_MODE_AUDIO if requested_mode == EXPORT_MODE_VIDEO else requested_mode,
+                                format_name=format_name,
+                                allow_existing=True,
+                            ),
+                            format_name=format_name,
+                        )
+                        self._post_ui(
+                            lambda item_id=item.item_id, detail=friendly: self._set_batch_item_state(
+                                item_id,
+                                status="Failed",
+                                detail=shorten_middle(detail, 72),
+                                output_path=None,
+                            )
+                        )
+                        self._queue_log(f"Batch export failed for {item.path}: {friendly}")
+                        failures += 1
+                self._post_ui(
+                    lambda successes=successes, failures=failures, total=total: self._complete_batch_queue(
+                        cancelled=self.cancel_event.is_set(),
+                        successes=successes,
+                        failures=failures,
+                        total=total,
+                    )
+                )
+            except Exception as exc:
+                self._post_ui(lambda error_text=str(exc), trace_text=traceback.format_exc(): self._fail_task(error_text, trace_text))
+
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
 
     def _start_export(self) -> None:
         if self.media_info is None or self.media_path is None or self.mode != "idle":
@@ -2309,22 +2857,6 @@ class GlideAudioApp(ctk.CTk):
         filter_chain = self._current_filter_chain()
         ffmpeg_path = self._get_ffmpeg_path()
         ffprobe_path = self._get_ffprobe_path()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_output_path = output_path.with_name(f"{output_path.stem}.glideaudio-render{output_path.suffix}")
-        if temp_output_path.exists():
-            temp_output_path.unlink(missing_ok=True)
-
-        command = (
-            build_video_export_command(self.media_path, temp_output_path, ffmpeg_path, filter_chain=filter_chain)
-            if mode == EXPORT_MODE_VIDEO
-            else build_audio_export_command(
-                self.media_path,
-                temp_output_path,
-                ffmpeg_path,
-                filter_chain=filter_chain,
-                format_name=self.export_format_var.get(),
-            )
-        )
 
         self.cancel_event.clear()
         self.progress.set(0.0)
@@ -2332,31 +2864,21 @@ class GlideAudioApp(ctk.CTk):
         self._set_status("Exporting cleaned output...")
         self.export_status_var.set(f"Rendering {output_path.name} ...")
         self._log(f"Starting export -> {output_path}")
-        self._log(" ".join(command))
 
         def worker() -> None:
             try:
-                run_ffmpeg_with_progress(
-                    command,
-                    duration=self.media_info.duration,
-                    cancel_event=self.cancel_event,
-                    log_callback=self._queue_log,
-                    progress_callback=self._queue_progress,
-                    process_callback=self._set_active_process,
-                )
-                verified_info = verify_rendered_output(
-                    temp_output_path,
+                verified_info = self._render_output_to_path(
+                    media_path=self.media_path,
+                    media_info=self.media_info,
+                    output_path=output_path,
+                    mode=mode,
+                    format_name=self.export_format_var.get(),
+                    filter_chain=filter_chain,
+                    ffmpeg_path=ffmpeg_path,
                     ffprobe_path=ffprobe_path,
-                    expected_video=mode == EXPORT_MODE_VIDEO,
-                    expected_audio=True,
-                    source_duration=self.media_info.duration,
                 )
-                if output_path.exists():
-                    output_path.unlink()
-                temp_output_path.replace(output_path)
                 self._post_ui(lambda info=verified_info: self._complete_export(output_path, info))
             except Exception as exc:
-                temp_output_path.unlink(missing_ok=True)
                 if str(exc) == "cancelled":
                     self._post_ui(self._complete_cancelled_export)
                 else:
@@ -2432,7 +2954,10 @@ class GlideAudioApp(ctk.CTk):
         has_source = self.media_info is not None
         has_preview = self.preview_original_wav is not None and self.preview_cleaned_wav is not None
         can_video = bool(self.media_info and self.media_info.has_video)
+        has_batch_items = bool(self.batch_queue)
+        has_batch_selection = bool(self._selected_batch_item_ids()) if hasattr(self, "batch_tree") else False
 
+        self.browse_button.configure(state="normal" if not busy else "disabled")
         self.analyze_button.configure(state="normal" if has_source and not busy else "disabled")
         self.refresh_preview_button.configure(state="normal" if has_source and not busy else "disabled")
         self.stop_preview_button.configure(
@@ -2452,6 +2977,13 @@ class GlideAudioApp(ctk.CTk):
         self.export_mode_menu.configure(state="normal" if has_source and not busy else "disabled")
         self.export_format_menu.configure(state="normal" if has_source and not busy else "disabled")
         self.loudness_target_menu.configure(state="normal" if has_source and not busy else "disabled")
+        self.batch_add_button.configure(state="normal" if not busy else "disabled")
+        self.batch_queue_current_button.configure(state="normal" if has_source and not busy else "disabled")
+        self.batch_load_button.configure(state="normal" if has_batch_selection and not busy else "disabled")
+        self.batch_remove_button.configure(state="normal" if has_batch_selection and not busy else "disabled")
+        self.batch_clear_button.configure(state="normal" if has_batch_items and not busy else "disabled")
+        self.batch_run_button.configure(state="normal" if has_batch_items and not busy else "disabled")
+        self.batch_stop_button.configure(state="normal" if self.mode == "batch" else "disabled")
         self._update_preview_transport_buttons(has_preview=has_preview, busy=busy)
         if not can_video and self.export_mode_var.get() == EXPORT_MODE_VIDEO:
             self.export_mode_var.set(EXPORT_MODE_AUDIO)

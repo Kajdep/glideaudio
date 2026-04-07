@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Add batch queue support
-  Linear: `ALL-50`
-  Support multiple source files with a simple queue so repeated cleanup/export runs do not require one-file-at-a-time setup.
+- [ ] Finish packaging and release assets
+  Linear: `ALL-48`
+  Add branded icon assets, privacy policy, store collateral, and a final Windows release build pass.
 
 ## Done
 
@@ -32,8 +32,8 @@
   Linear: `ALL-47`
   GlideAudio now remembers the key session choices between launches so creator workflows resume where they left off.
 
-## Queue
+- [x] Add batch queue support
+  Linear: `ALL-50`
+  Added a simple batch queue with per-item state, current-file queuing, selection/loading, and safe export-path reuse for repeated runs.
 
-- [ ] Finish packaging and release assets
-  Linear: `ALL-48`
-  Add branded icon assets, privacy policy, store collateral, and a final Windows release build pass.
+## Queue
