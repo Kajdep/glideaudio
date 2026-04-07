@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Add better preview transport
-  Linear: `ALL-44`
-  Add play/pause controls directly to the preview cards, improve playback-state feedback, and keep the A/B listening flow obvious.
+- [ ] No active repo TODO item
+  Linear: `ALL-25`
+  Remaining follow-up is outside the code path: live support/privacy URLs, store screenshots, and store identity values.
 
 ## Done
 
@@ -12,28 +12,32 @@
   Linear: `ALL-43`
   Flattened the rendered preview surfaces, fixed the nested-card look, and improved readability across common window widths.
 
-## Queue
+- [x] Add better preview transport
+  Linear: `ALL-44`
+  Added per-card play/pause controls, stop/reset transport actions, clearer preview-state feedback, and more obvious A/B listening flow.
 
-- [ ] Tune cleanup presets against real voice samples
+- [x] Tune cleanup presets against real voice samples
   Linear: `ALL-45`
-  Validate the FFmpeg cleanup chain on clean speech, noisy-room speech, and audio-only sources, then retune preset defaults from actual results.
+  Retuned the cleanup presets and FFmpeg chain against clean speech, noisy-room speech, and audio-only samples so the defaults stay creator-friendly instead of DAW-heavy.
 
-- [ ] Harden export validation and failure handling
+- [x] Harden export validation and failure handling
   Linear: `ALL-46`
-  Improve overwrite behavior, surface codec and path errors clearly, and verify produced files before reporting success.
+  Added explicit overwrite confirmation, verified temp renders before success, clearer FFmpeg/path failures, and safer repaired-video export checks.
 
-- [ ] Persist session settings
-  Linear: `ALL-47`
-  Save last-used preset, preview length, loudness target, output folder, and export mode between launches.
-
-- [ ] Finish packaging and release assets
-  Linear: `ALL-48`
-  Add branded icon assets, privacy policy, store collateral, and a final Windows release build pass.
-
-- [ ] Improve diagnostics and preset suggestions
+- [x] Improve diagnostics and preset suggestions
   Linear: `ALL-49`
-  Make the speech/noise analysis more trustworthy and use it to suggest a starting preset automatically.
+  Strengthened the analysis heuristics, added a safer starting-preset recommendation, and reduced misleading speech/noise guesses.
 
-- [ ] Add batch queue support
+- [x] Persist session settings
+  Linear: `ALL-47`
+  GlideAudio now remembers the key session choices between launches so creator workflows resume where they left off.
+
+- [x] Add batch queue support
   Linear: `ALL-50`
-  Support multiple source files with a simple queue so repeated cleanup/export runs do not require one-file-at-a-time setup.
+  Added a simple batch queue with per-item state, current-file queuing, selection/loading, and safe export-path reuse for repeated runs.
+
+- [x] Finish packaging and release assets
+  Linear: `ALL-48`
+  Added branded icon assets, a local privacy policy, store collateral scaffolding, and a successful Windows release build pass.
+
+## Queue

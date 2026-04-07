@@ -74,6 +74,7 @@ def main() -> None:
             samples,
             glideaudio.ANALYSIS_SAMPLE_RATE,
             average_lufs=glideaudio.loudnorm_probe(sample_mp4, ffmpeg, 6),
+            peak_dbfs=glideaudio.peak_volume_probe(sample_mp4, ffmpeg, 6),
         )
         filter_chain = glideaudio.build_audio_filter_chain(
             0.5,
@@ -116,12 +117,25 @@ def main() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        repaired_info = glideaudio.probe_media(export_mp4, ffprobe)
+        audio_info = glideaudio.verify_rendered_output(
+            export_wav,
+            ffprobe_path=ffprobe,
+            expected_video=False,
+            expected_audio=True,
+            source_duration=info.duration,
+        )
+        repaired_info = glideaudio.verify_rendered_output(
+            export_mp4,
+            ffprobe_path=ffprobe,
+            expected_video=True,
+            expected_audio=True,
+            source_duration=info.duration,
+        )
 
         print("source:", info)
         print("diagnostics:", diagnostics)
         print("preview bytes:", preview_wav.stat().st_size)
-        print("audio export bytes:", export_wav.stat().st_size)
+        print("audio export:", audio_info)
         print("video export:", repaired_info)
 
 

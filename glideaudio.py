@@ -20,7 +20,8 @@ from typing import Optional
 import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from tkinter import filedialog, messagebox
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
 
 if os.name == "nt":
@@ -64,60 +65,60 @@ COLORS = {
 
 PRESET_VALUES: dict[str, dict[str, float]] = {
     "Custom": {
-        "noise": 0.40,
-        "clarity": 0.35,
-        "de_echo": 0.20,
-        "de_hum": 0.25,
-        "leveling": 0.45,
-        "limiter": 0.50,
+        "noise": 0.28,
+        "clarity": 0.36,
+        "de_echo": 0.10,
+        "de_hum": 0.14,
+        "leveling": 0.38,
+        "limiter": 0.64,
     },
     "Clean Voice": {
-        "noise": 0.40,
-        "clarity": 0.45,
-        "de_echo": 0.18,
-        "de_hum": 0.15,
-        "leveling": 0.48,
-        "limiter": 0.45,
+        "noise": 0.28,
+        "clarity": 0.36,
+        "de_echo": 0.08,
+        "de_hum": 0.10,
+        "leveling": 0.32,
+        "limiter": 0.62,
     },
     "Noisy Room": {
-        "noise": 0.78,
-        "clarity": 0.52,
-        "de_echo": 0.52,
-        "de_hum": 0.42,
-        "leveling": 0.54,
-        "limiter": 0.48,
+        "noise": 0.68,
+        "clarity": 0.48,
+        "de_echo": 0.44,
+        "de_hum": 0.34,
+        "leveling": 0.42,
+        "limiter": 0.74,
     },
     "Screen Recording Voiceover": {
-        "noise": 0.34,
-        "clarity": 0.56,
-        "de_echo": 0.08,
-        "de_hum": 0.25,
-        "leveling": 0.58,
-        "limiter": 0.42,
+        "noise": 0.20,
+        "clarity": 0.50,
+        "de_echo": 0.04,
+        "de_hum": 0.18,
+        "leveling": 0.44,
+        "limiter": 0.58,
     },
     "Podcast Speech": {
-        "noise": 0.26,
-        "clarity": 0.44,
-        "de_echo": 0.10,
-        "de_hum": 0.18,
-        "leveling": 0.64,
-        "limiter": 0.56,
+        "noise": 0.16,
+        "clarity": 0.38,
+        "de_echo": 0.04,
+        "de_hum": 0.12,
+        "leveling": 0.48,
+        "limiter": 0.66,
     },
     "Social Clip Speech": {
-        "noise": 0.48,
-        "clarity": 0.62,
-        "de_echo": 0.22,
-        "de_hum": 0.22,
-        "leveling": 0.72,
-        "limiter": 0.72,
+        "noise": 0.34,
+        "clarity": 0.56,
+        "de_echo": 0.14,
+        "de_hum": 0.18,
+        "leveling": 0.60,
+        "limiter": 0.80,
     },
     "Loudness Match Only": {
         "noise": 0.00,
         "clarity": 0.08,
         "de_echo": 0.00,
         "de_hum": 0.00,
-        "leveling": 0.86,
-        "limiter": 0.64,
+        "leveling": 0.66,
+        "limiter": 0.72,
     },
 }
 
@@ -169,6 +170,15 @@ class AudioDiagnostics:
     speech_presence: str
     speech_score: float
     clip_events: int
+
+
+@dataclass
+class BatchQueueItem:
+    item_id: str
+    path: Path
+    status: str = "Queued"
+    detail: str = "Waiting to export."
+    output_path: Optional[Path] = None
 
 
 def ui_font(size: int, weight: str = "normal"):
@@ -375,7 +385,17 @@ def probe_media(path: Path, ffprobe_path: str) -> MediaInfo:
 
     payload = json.loads(result.stdout or "{}")
     streams = payload.get("streams", [])
-    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    video_stream = next(
+        (
+            stream
+            for stream in streams
+            if stream.get("codec_type") == "video"
+            and not bool((stream.get("disposition") or {}).get("attached_pic"))
+            and int(stream.get("width") or 0) > 0
+            and int(stream.get("height") or 0) > 0
+        ),
+        None,
+    )
     audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
 
     duration = float(
@@ -528,35 +548,78 @@ def loudnorm_probe(path: Path, ffmpeg_path: str, max_seconds: float = ANALYSIS_M
         return None
 
 
-def analyze_audio_samples(samples: np.ndarray, sample_rate: int, *, average_lufs: Optional[float] = None) -> AudioDiagnostics:
+def peak_volume_probe(path: Path, ffmpeg_path: str, max_seconds: float = ANALYSIS_MAX_SECONDS) -> Optional[float]:
+    command = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-i",
+        str(path),
+        "-t",
+        f"{max_seconds:.3f}",
+        "-vn",
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-",
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        **subprocess_window_kwargs(),
+    )
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    match = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", combined)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def analyze_audio_samples(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    average_lufs: Optional[float] = None,
+    peak_dbfs: Optional[float] = None,
+) -> AudioDiagnostics:
     if samples.size == 0:
         raise RuntimeError("The selected file does not contain readable audio samples.")
 
     peak = float(np.max(np.abs(samples)))
-    peak_db = dbfs(peak)
+    peak_db = peak_dbfs if peak_dbfs is not None else dbfs(peak)
     rms = float(np.sqrt(np.mean(samples * samples) + 1e-12))
     rms_db = dbfs(rms)
 
     frame_rms = _frame_rms(samples, sample_rate)
     if frame_rms.size:
-        active_windows = frame_rms[frame_rms > max(np.percentile(frame_rms, 20), 1e-5)]
-        noise_floor = float(np.percentile(active_windows if active_windows.size else frame_rms, 12))
+        noise_threshold = max(np.percentile(frame_rms, 40), 1e-6)
+        noise_windows = frame_rms[frame_rms <= noise_threshold]
+        noise_floor = float(np.percentile(noise_windows if noise_windows.size else frame_rms, 25))
     else:
         noise_floor = rms
     noise_floor_db = dbfs(noise_floor)
 
-    clip_events = int(np.count_nonzero(np.abs(samples) >= 0.995))
-    if clip_events > 0 or peak_db >= -0.6:
+    clip_events = int(np.count_nonzero(np.abs(samples) >= 0.9995))
+    if peak_dbfs is not None and peak_dbfs <= -1.5:
+        clip_events = 0
+    if peak_db >= -0.3 or clip_events > 24:
         clipping_risk = "High"
-    elif peak_db >= -2.0:
+    elif peak_db >= -1.5 or clip_events > 0:
         clipping_risk = "Watch"
     else:
         clipping_risk = "Low"
 
     speech_score = float(estimate_speech_score(samples, sample_rate))
-    if speech_score >= 0.62:
+    if speech_score >= 0.66:
         speech_presence = "Strong"
-    elif speech_score >= 0.38:
+    elif speech_score >= 0.44:
         speech_presence = "Moderate"
     else:
         speech_presence = "Weak"
@@ -570,6 +633,20 @@ def analyze_audio_samples(samples: np.ndarray, sample_rate: int, *, average_lufs
         speech_score=speech_score,
         clip_events=clip_events,
     )
+
+
+def suggest_cleanup_preset(info: MediaInfo, diagnostics: AudioDiagnostics) -> tuple[str, str]:
+    if diagnostics.peak_dbfs >= -1.2 and diagnostics.average_lufs >= -14.8:
+        return "Loudness Match Only", "already loud and close to finished"
+    if diagnostics.noise_floor_dbfs > -20.5 or (
+        diagnostics.speech_score < 0.46 and diagnostics.noise_floor_dbfs > -23.0
+    ):
+        return "Noisy Room", "speech sits in noticeable room noise"
+    if not info.has_video and diagnostics.noise_floor_dbfs <= -25.0 and diagnostics.speech_score >= 0.56:
+        return "Podcast Speech", "audio-only speech is already fairly clean"
+    if info.has_video and diagnostics.noise_floor_dbfs <= -23.5 and diagnostics.speech_score >= 0.58:
+        return "Screen Recording Voiceover", "voice track is controlled and fairly clean"
+    return "Clean Voice", "speech needs a light cleanup pass"
 
 
 def fit_cover(image: Image.Image, target_size: tuple[int, int]) -> Image.Image:
@@ -712,26 +789,26 @@ def build_audio_filter_chain(
         )
 
     if noise > 0.02:
-        reduction = 6.0 + noise * 18.0
-        noise_floor = -58.0 + noise * 18.0
+        reduction = 4.0 + noise * 14.0
+        noise_floor = -60.0 + noise * 16.0
         filters.append(f"afftdn=nr={reduction:.1f}:nf={noise_floor:.1f}")
 
     if de_echo > 0.02:
-        mud_cut = 1.8 + de_echo * 5.2
-        gate_ratio = 1.2 + de_echo * 2.8
-        threshold = 0.003 + (1.0 - de_echo) * 0.002
+        mud_cut = 1.2 + de_echo * 4.0
+        gate_ratio = 1.15 + de_echo * 1.65
+        threshold = 0.0026 + (1.0 - de_echo) * 0.0014
         filters.extend(
             [
                 f"equalizer=f=180:t=q:w=1.1:g=-{mud_cut:.1f}",
                 f"equalizer=f=420:t=q:w=1.0:g=-{mud_cut * 0.8:.1f}",
-                f"agate=threshold={threshold:.4f}:ratio={gate_ratio:.2f}:attack=12:release=260",
+                f"agate=threshold={threshold:.4f}:ratio={gate_ratio:.2f}:attack=8:release=220",
             ]
         )
 
     if clarity > 0.02:
-        presence = 2.0 + clarity * 5.0
-        air = 1.0 + clarity * 3.5
-        low_mid_cut = clarity * 2.8
+        presence = 1.6 + clarity * 3.4
+        air = 0.8 + clarity * 2.2
+        low_mid_cut = clarity * 1.8
         filters.extend(
             [
                 f"equalizer=f=250:t=q:w=1.1:g=-{low_mid_cut:.1f}",
@@ -742,17 +819,18 @@ def build_audio_filter_chain(
 
     if leveling > 0.02:
         gaussian_size = odd_int(9 + leveling * 20, minimum=5)
-        max_gain = 3.0 + leveling * 17.0
-        peak = 0.84 + leveling * 0.10
+        max_gain = 2.4 + leveling * 10.5
+        peak = 0.78 + leveling * 0.08
         filters.append(f"dynaudnorm=f=200:g={gaussian_size}:m={max_gain:.1f}:p={peak:.2f}")
 
     if loudness_target is not None:
-        filters.append(f"loudnorm=I={loudness_target:.1f}:TP=-1.5:LRA=11")
+        filters.append(f"loudnorm=I={loudness_target:.1f}:TP=-2.0:LRA=11")
 
     if limiter > 0.02:
-        limit = 0.97 - limiter * 0.09
-        release = 35.0 + limiter * 85.0
-        filters.append(f"alimiter=limit={limit:.2f}:attack=4:release={release:.0f}")
+        filters.append("aresample=96000")
+        limit = 0.95 - limiter * 0.08
+        release = 45.0 + limiter * 95.0
+        filters.append(f"alimiter=limit={limit:.2f}:attack=4:release={release:.0f}:level=0:latency=1:asc=1:asc_level=0.35")
 
     filters.append("aresample=48000")
     return ",".join(filters)
@@ -808,6 +886,8 @@ def build_audio_export_command(
         "-hide_banner",
         "-i",
         str(input_path),
+        "-map",
+        "0:a:0",
         "-vn",
         "-af",
         filter_chain,
@@ -842,6 +922,7 @@ def build_video_export_command(
         "0:v:0",
         "-map",
         "0:a:0",
+        "-shortest",
         "-c:v",
         "copy",
         "-af",
@@ -909,6 +990,94 @@ def run_ffmpeg_with_progress(
             process_callback(None)
 
 
+def friendly_export_error(detail: str, *, output_path: Optional[Path] = None, format_name: Optional[str] = None) -> str:
+    lowered = detail.lower()
+    if "permission denied" in lowered or "access is denied" in lowered:
+        location = f"\n{output_path}" if output_path is not None else ""
+        return (
+            "GlideAudio could not write the export file. Close any app using that file and choose a writable folder."
+            f"{location}"
+        )
+    if "unknown encoder" in lowered or "encoder not found" in lowered:
+        format_hint = f" for {format_name}" if format_name else ""
+        return f"FFmpeg on this machine cannot encode the selected export format{format_hint}. Try WAV or install a fuller FFmpeg build."
+    if "invalid argument" in lowered:
+        return "The selected export settings produced an invalid FFmpeg command. Try another format or output path."
+    if "no such file or directory" in lowered:
+        return "GlideAudio could not find the selected source file or export folder."
+    if "error opening output" in lowered:
+        return "GlideAudio could not open the export destination. Check the file name, extension, and folder permissions."
+    if "conversion failed" in lowered:
+        return "FFmpeg failed while rendering the cleaned output. Try a simpler format like WAV and review the source media."
+    return detail.strip() or "FFmpeg failed while exporting the cleaned output."
+
+
+def verify_rendered_output(
+    output_path: Path,
+    *,
+    ffprobe_path: str,
+    expected_video: bool,
+    expected_audio: bool,
+    source_duration: float,
+) -> MediaInfo:
+    if not output_path.exists():
+        raise RuntimeError("The export finished without creating an output file.")
+    if output_path.stat().st_size <= 0:
+        raise RuntimeError("The export file was created but is empty.")
+
+    info = probe_media(output_path, ffprobe_path)
+    if expected_audio and not info.has_audio:
+        raise RuntimeError("The exported file does not contain a readable audio stream.")
+    if expected_video and not info.has_video:
+        raise RuntimeError("The repaired video export does not contain a readable video stream.")
+    if expected_video and abs(info.duration - source_duration) > 1.5:
+        raise RuntimeError("The repaired video duration does not match the source closely enough to trust the export.")
+    if not expected_video and info.duration <= 0.1:
+        raise RuntimeError("The cleaned audio export is too short to trust.")
+    return info
+
+
+def app_settings_path() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return base / APP_NAME / "settings.json"
+    return Path.home() / f".{APP_NAME.lower()}" / "settings.json"
+
+
+def load_app_settings() -> dict[str, str]:
+    path = app_settings_path()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_app_settings(settings: dict[str, str]) -> None:
+    path = app_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
+def suggested_output_filename(source_path: Path, *, mode: str, format_name: str) -> str:
+    extension = format_name.lower() if mode == EXPORT_MODE_AUDIO else "mp4"
+    return f"{source_path.stem}_glideaudio_cleaned.{extension}"
+
+
+def next_available_output_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 class GlideAudioApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -945,6 +1114,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_original_wav: Optional[Path] = None
         self.preview_cleaned_wav: Optional[Path] = None
         self.preview_active_variant: Optional[str] = None
+        self.preview_last_variant: Optional[str] = None
         self.preview_playback_state = "stopped"
 
         self.mode = "idle"
@@ -952,8 +1122,13 @@ class GlideAudioApp(ctk.CTk):
         self.cancel_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self.ui_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self.batch_queue: list[BatchQueueItem] = []
+        self.batch_queue_index = 0
 
-        self.output_dir = Path.home() / "Videos" / "GlideAudio Exports"
+        self.app_settings = load_app_settings()
+        default_output_dir = Path.home() / "Videos" / "GlideAudio Exports"
+        saved_output_dir = self.app_settings.get("output_dir")
+        self.output_dir = Path(saved_output_dir) if saved_output_dir else default_output_dir
         self.output_path: Optional[Path] = None
 
         self.source_status_var = ctk.StringVar(value="Drop a video or audio file here, or browse to begin.")
@@ -961,16 +1136,29 @@ class GlideAudioApp(ctk.CTk):
         self.audio_meta_var = ctk.StringVar(value="No source loaded yet.")
         self.source_preview_caption_var = ctk.StringVar(value="Load media to inspect waveform or poster frame.")
         self.preview_status_var = ctk.StringVar(value="Preview the original and cleaned loop after analysis.")
+        self.preview_transport_var = ctk.StringVar(value="Idle")
         self.preview_original_caption_var = ctk.StringVar(value="Generate the preview loop to hear the untouched segment.")
         self.preview_cleaned_caption_var = ctk.StringVar(value="The processed loop will show here after preview render.")
+        self.preset_hint_var = ctk.StringVar(value="Load a source and GlideAudio will suggest a starting preset.")
+        self.batch_status_var = ctk.StringVar(value="Queue idle. Add files to batch export.")
         self.export_status_var = ctk.StringVar(value="Choose an output mode and render the repaired file.")
         self.status_var = ctk.StringVar(value="Ready.")
 
-        self.preset_var = ctk.StringVar(value="Clean Voice")
-        self.preview_length_var = ctk.StringVar(value="10 sec")
-        self.export_mode_var = ctk.StringVar(value=EXPORT_MODE_AUDIO)
-        self.export_format_var = ctk.StringVar(value="WAV")
-        self.loudness_target_var = ctk.StringVar(value="YouTube / Social (-14 LUFS)")
+        saved_preset = self.app_settings.get("preset")
+        saved_preview_length = self.app_settings.get("preview_length")
+        saved_export_mode = self.app_settings.get("export_mode")
+        saved_format = self.app_settings.get("export_format")
+        saved_target = self.app_settings.get("loudness_target")
+        self.preset_var = ctk.StringVar(value=saved_preset if saved_preset in PRESET_VALUES else "Clean Voice")
+        self.preview_length_var = ctk.StringVar(value=saved_preview_length if saved_preview_length in PREVIEW_LENGTHS else "10 sec")
+        self.export_mode_var = ctk.StringVar(value=saved_export_mode if saved_export_mode in EXPORT_FORMATS else EXPORT_MODE_AUDIO)
+        default_format = self.export_mode_var.get()
+        self.export_format_var = ctk.StringVar(
+            value=saved_format if saved_format in EXPORT_FORMATS.get(default_format, []) else EXPORT_FORMATS[default_format][0]
+        )
+        self.loudness_target_var = ctk.StringVar(
+            value=saved_target if saved_target in LOUDNESS_TARGETS else "YouTube / Social (-14 LUFS)"
+        )
         self.preview_start_var = ctk.DoubleVar(value=0.0)
 
         self.slider_vars = {key: ctk.DoubleVar(value=PRESET_VALUES["Clean Voice"][key]) for key, _ in SLIDER_KEYS}
@@ -987,7 +1175,7 @@ class GlideAudioApp(ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(40, self._drain_ui_events)
-        self._apply_preset("Clean Voice")
+        self._apply_preset(self.preset_var.get())
         self._set_source_placeholder()
         self._set_preview_placeholders()
         self._refresh_action_states()
@@ -1046,7 +1234,10 @@ class GlideAudioApp(ctk.CTk):
         self.preview_card.pack(fill="both", expand=True, pady=(0, 14))
 
         self.export_card = self._build_card(right, "Export")
-        self.export_card.pack(fill="x")
+        self.export_card.pack(fill="x", pady=(0, 14))
+
+        self.batch_card = self._build_card(right, "Batch Queue")
+        self.batch_card.pack(fill="both")
 
         self.log_card = self._build_card(self, "Log")
         self.log_card.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 22))
@@ -1056,6 +1247,7 @@ class GlideAudioApp(ctk.CTk):
         self._build_cleanup_section()
         self._build_preview_section()
         self._build_export_section()
+        self._build_batch_section()
         self._build_log_section()
 
     def _build_card(self, parent, title: str) -> ctk.CTkFrame:
@@ -1073,7 +1265,7 @@ class GlideAudioApp(ctk.CTk):
         controls.pack(fill="x", padx=18, pady=(0, 12))
         controls.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkButton(
+        self.browse_button = ctk.CTkButton(
             controls,
             text="Browse Source",
             command=self._select_source,
@@ -1082,7 +1274,8 @@ class GlideAudioApp(ctk.CTk):
             font=ui_font(13, "bold"),
             height=38,
             corner_radius=14,
-        ).grid(row=0, column=0, sticky="ew")
+        )
+        self.browse_button.grid(row=0, column=0, sticky="ew")
 
         self.analyze_button = ctk.CTkButton(
             controls,
@@ -1208,6 +1401,14 @@ class GlideAudioApp(ctk.CTk):
             dropdown_fg_color=COLORS["surface_alt"],
         )
         self.preset_menu.grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(
+            self.cleanup_card,
+            textvariable=self.preset_hint_var,
+            font=ui_font(12),
+            text_color=COLORS["text_secondary"],
+            justify="left",
+            wraplength=430,
+        ).pack(fill="x", padx=18, pady=(0, 10))
 
         sliders = ctk.CTkFrame(self.cleanup_card, fg_color="transparent")
         sliders.pack(fill="x", padx=18, pady=(0, 18))
@@ -1285,6 +1486,33 @@ class GlideAudioApp(ctk.CTk):
         )
         self.refresh_preview_button.pack(side="left")
 
+        transport_state = ctk.CTkLabel(
+            second_row,
+            textvariable=self.preview_transport_var,
+            font=mono_font(12, "bold"),
+            text_color=COLORS["primary_soft"],
+            fg_color=COLORS["bg_tertiary"],
+            corner_radius=12,
+            width=124,
+            height=34,
+        )
+        transport_state.pack(side="right")
+
+        self.reset_preview_button = ctk.CTkButton(
+            second_row,
+            text="Reset",
+            command=self._reset_preview_audio,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=88,
+        )
+        self.reset_preview_button.pack(side="right", padx=(0, 10))
+
         self.stop_preview_button = ctk.CTkButton(
             second_row,
             text="Stop",
@@ -1296,8 +1524,9 @@ class GlideAudioApp(ctk.CTk):
             font=ui_font(13, "bold"),
             height=36,
             corner_radius=14,
+            width=88,
         )
-        self.stop_preview_button.pack(side="left", padx=(10, 0))
+        self.stop_preview_button.pack(side="right", padx=(0, 10))
 
         ctk.CTkLabel(
             self.preview_card,
@@ -1437,6 +1666,7 @@ class GlideAudioApp(ctk.CTk):
             grid,
             variable=self.export_format_var,
             values=EXPORT_FORMATS[EXPORT_MODE_AUDIO],
+            command=lambda _value: self._on_export_format_changed(),
             fg_color=COLORS["bg_tertiary"],
             button_color=COLORS["primary"],
             button_hover_color=COLORS["primary_hover"],
@@ -1450,6 +1680,7 @@ class GlideAudioApp(ctk.CTk):
             grid,
             variable=self.loudness_target_var,
             values=list(LOUDNESS_TARGETS.keys()),
+            command=lambda _value: self._on_loudness_target_changed(),
             fg_color=COLORS["bg_tertiary"],
             button_color=COLORS["primary"],
             button_hover_color=COLORS["primary_hover"],
@@ -1524,6 +1755,183 @@ class GlideAudioApp(ctk.CTk):
         self.progress.pack(fill="x", padx=18, pady=(0, 18))
         self.progress.set(0.0)
 
+    def _build_batch_section(self) -> None:
+        controls_top = ctk.CTkFrame(self.batch_card, fg_color="transparent")
+        controls_top.pack(fill="x", padx=18, pady=(0, 10))
+
+        self.batch_add_button = ctk.CTkButton(
+            controls_top,
+            text="Add Files",
+            command=self._add_batch_files,
+            fg_color=COLORS["primary"],
+            hover_color=COLORS["primary_hover"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=118,
+        )
+        self.batch_add_button.pack(side="left")
+
+        self.batch_queue_current_button = ctk.CTkButton(
+            controls_top,
+            text="Queue Current",
+            command=self._queue_current_source,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=126,
+        )
+        self.batch_queue_current_button.pack(side="left", padx=(10, 0))
+
+        self.batch_load_button = ctk.CTkButton(
+            controls_top,
+            text="Load Selected",
+            command=self._load_selected_batch_item,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=126,
+        )
+        self.batch_load_button.pack(side="right")
+
+        controls_bottom = ctk.CTkFrame(self.batch_card, fg_color="transparent")
+        controls_bottom.pack(fill="x", padx=18, pady=(0, 10))
+
+        self.batch_remove_button = ctk.CTkButton(
+            controls_bottom,
+            text="Remove",
+            command=self._remove_selected_batch_items,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=96,
+        )
+        self.batch_remove_button.pack(side="left")
+
+        self.batch_clear_button = ctk.CTkButton(
+            controls_bottom,
+            text="Clear",
+            command=self._clear_batch_queue,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=88,
+        )
+        self.batch_clear_button.pack(side="left", padx=(10, 0))
+
+        self.batch_stop_button = ctk.CTkButton(
+            controls_bottom,
+            text="Stop Queue",
+            command=self._stop_batch_queue,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=112,
+        )
+        self.batch_stop_button.pack(side="right")
+
+        self.batch_run_button = ctk.CTkButton(
+            controls_bottom,
+            text="Run Queue",
+            command=self._start_batch_queue,
+            fg_color=COLORS["primary"],
+            hover_color=COLORS["primary_hover"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=112,
+        )
+        self.batch_run_button.pack(side="right", padx=(0, 10))
+
+        batch_table_frame = ctk.CTkFrame(
+            self.batch_card,
+            fg_color=COLORS["bg_tertiary"],
+            corner_radius=18,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
+        batch_table_frame.pack(fill="both", expand=True, padx=18, pady=(0, 10))
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("default")
+        except tk.TclError:
+            pass
+        style.configure(
+            "GlideAudio.Treeview",
+            background=COLORS["bg_tertiary"],
+            fieldbackground=COLORS["bg_tertiary"],
+            foreground=COLORS["text_primary"],
+            borderwidth=0,
+            rowheight=30,
+            font=mono_font(11),
+        )
+        style.configure(
+            "GlideAudio.Treeview.Heading",
+            background=COLORS["surface_alt"],
+            foreground=COLORS["text_secondary"],
+            relief="flat",
+            font=ui_font(12, "bold"),
+        )
+        style.map(
+            "GlideAudio.Treeview",
+            background=[("selected", COLORS["primary"])],
+            foreground=[("selected", COLORS["bg_primary"])],
+        )
+
+        tree_container = tk.Frame(batch_table_frame, background=COLORS["bg_tertiary"])
+        tree_container.pack(fill="both", expand=True, padx=12, pady=12)
+
+        self.batch_tree = ttk.Treeview(
+            tree_container,
+            style="GlideAudio.Treeview",
+            columns=("status", "source", "detail"),
+            show="headings",
+            selectmode="extended",
+            height=7,
+        )
+        self.batch_tree.heading("status", text="Status")
+        self.batch_tree.heading("source", text="Source")
+        self.batch_tree.heading("detail", text="Detail")
+        self.batch_tree.column("status", width=110, anchor="w", stretch=False)
+        self.batch_tree.column("source", width=250, anchor="w")
+        self.batch_tree.column("detail", width=360, anchor="w")
+        self.batch_tree.pack(side="left", fill="both", expand=True)
+        self.batch_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_action_states())
+
+        scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.batch_tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.batch_tree.configure(yscrollcommand=scrollbar.set)
+
+        ctk.CTkLabel(
+            self.batch_card,
+            textvariable=self.batch_status_var,
+            font=ui_font(13),
+            text_color=COLORS["text_secondary"],
+            justify="left",
+            wraplength=760,
+        ).pack(fill="x", padx=18, pady=(0, 18))
+
     def _build_log_section(self) -> None:
         self.log_box = ctk.CTkTextbox(
             self.log_card,
@@ -1566,7 +1974,113 @@ class GlideAudioApp(ctk.CTk):
             self.ffprobe_path = resolve_binary("ffprobe")
         return self.ffprobe_path
 
+    def _default_output_path(self, source_path: Path, *, mode: str, format_name: str, allow_existing: bool) -> Path:
+        candidate = self.output_dir / suggested_output_filename(source_path, mode=mode, format_name=format_name)
+        return candidate if allow_existing else next_available_output_path(candidate)
+
+    def _batch_item_values(self, item: BatchQueueItem) -> tuple[str, str, str]:
+        detail = item.detail
+        if item.output_path is not None:
+            detail = f"{detail} | {item.output_path.name}"
+        return (item.status, compact_path_text(item.path), detail)
+
+    def _upsert_batch_item(self, item: BatchQueueItem) -> None:
+        values = self._batch_item_values(item)
+        if self.batch_tree.exists(item.item_id):
+            self.batch_tree.item(item.item_id, values=values)
+        else:
+            self.batch_tree.insert("", "end", iid=item.item_id, values=values)
+
+    def _selected_batch_item_ids(self) -> list[str]:
+        return list(self.batch_tree.selection()) if hasattr(self, "batch_tree") else []
+
+    def _update_batch_status(self, message: str) -> None:
+        self.batch_status_var.set(message)
+
+    def _enqueue_paths(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+
+        existing = {
+            item.path.resolve(strict=False) if item.path.exists() else item.path
+            for item in self.batch_queue
+        }
+        added = 0
+        for raw_path in paths:
+            path = Path(raw_path)
+            if not path.exists() or not path.is_file():
+                self._log(f"Skipped queue add, file missing: {path}")
+                continue
+            normalized = path.resolve(strict=False)
+            if normalized in existing:
+                self._log(f"Skipped queue add, already queued: {path}")
+                continue
+            self.batch_queue_index += 1
+            item = BatchQueueItem(item_id=f"batch-{self.batch_queue_index}", path=normalized)
+            self.batch_queue.append(item)
+            self._upsert_batch_item(item)
+            existing.add(normalized)
+            added += 1
+
+        if added:
+            self._update_batch_status(f"{len(self.batch_queue)} file(s) queued. Batch exports reuse the current cleanup and export settings.")
+        else:
+            self._update_batch_status("No new files were added to the queue.")
+        self._refresh_action_states()
+
+    def _add_batch_files(self) -> None:
+        if self.mode != "idle":
+            return
+        chosen = filedialog.askopenfilenames(
+            title="Add Files to GlideAudio Batch Queue",
+            filetypes=[("Media Files", MEDIA_FILE_TYPES), ("All Files", "*.*")],
+        )
+        if chosen:
+            self._enqueue_paths([Path(path) for path in chosen])
+
+    def _queue_current_source(self) -> None:
+        if self.mode != "idle" or self.media_path is None:
+            return
+        self._enqueue_paths([self.media_path])
+
+    def _load_selected_batch_item(self) -> None:
+        if self.mode != "idle":
+            return
+        selection = self._selected_batch_item_ids()
+        if not selection:
+            return
+        item = next((queued for queued in self.batch_queue if queued.item_id == selection[0]), None)
+        if item is not None:
+            self._load_source(item.path)
+
+    def _remove_selected_batch_items(self) -> None:
+        if self.mode != "idle":
+            return
+        selection = set(self._selected_batch_item_ids())
+        if not selection:
+            return
+        self.batch_queue = [item for item in self.batch_queue if item.item_id not in selection]
+        for item_id in selection:
+            if self.batch_tree.exists(item_id):
+                self.batch_tree.delete(item_id)
+        if self.batch_queue:
+            self._update_batch_status(f"{len(self.batch_queue)} file(s) remain queued.")
+        else:
+            self._update_batch_status("Queue idle. Add files to batch export.")
+        self._refresh_action_states()
+
+    def _clear_batch_queue(self) -> None:
+        if self.mode != "idle":
+            return
+        self.batch_queue.clear()
+        for item_id in self.batch_tree.get_children():
+            self.batch_tree.delete(item_id)
+        self._update_batch_status("Queue idle. Add files to batch export.")
+        self._refresh_action_states()
+
     def _select_source(self) -> None:
+        if self.mode != "idle":
+            return
         chosen = filedialog.askopenfilename(
             title="Select Audio or Video Source",
             filetypes=[("Media Files", MEDIA_FILE_TYPES), ("All Files", "*.*")],
@@ -1575,6 +2089,8 @@ class GlideAudioApp(ctk.CTk):
             self._load_source(Path(chosen))
 
     def _on_drop(self, event) -> str:
+        if self.mode != "idle":
+            return COPY
         paths = parse_drop_paths(self, event.data)
         if not paths:
             return COPY
@@ -1598,7 +2114,8 @@ class GlideAudioApp(ctk.CTk):
         self.source_status_var.set(f"Loading {shorten_middle(path.name, 44)} ...")
         self.source_meta_var.set("Inspecting file and audio stream.")
         self.audio_meta_var.set(str(path))
-        self.preview_status_var.set("Analyzing source before preview generation.")
+        self._set_preview_feedback("Analyzing source before preview generation.", "Analyzing")
+        self.preset_hint_var.set("Inspecting the source to suggest a starting preset.")
         self.export_status_var.set("Choose an output mode and render the repaired file.")
         self._set_source_placeholder()
         self._set_preview_placeholders()
@@ -1628,15 +2145,22 @@ class GlideAudioApp(ctk.CTk):
                 if not info.has_audio:
                     raise RuntimeError("The selected file has no audio stream to clean.")
                 analysis_window = min(info.duration, ANALYSIS_MAX_SECONDS)
+                analysis_sample_rate = min(max(info.sample_rate or ANALYSIS_SAMPLE_RATE, ANALYSIS_SAMPLE_RATE), 48000)
                 samples = decode_audio_samples(
                     path,
                     ffmpeg_path,
                     duration=analysis_window,
-                    sample_rate=ANALYSIS_SAMPLE_RATE,
+                    sample_rate=analysis_sample_rate,
                     channels=1,
                 )
                 loudness = loudnorm_probe(path, ffmpeg_path, max_seconds=analysis_window)
-                diagnostics = analyze_audio_samples(samples, ANALYSIS_SAMPLE_RATE, average_lufs=loudness)
+                peak_db = peak_volume_probe(path, ffmpeg_path, max_seconds=analysis_window)
+                diagnostics = analyze_audio_samples(
+                    samples,
+                    analysis_sample_rate,
+                    average_lufs=loudness,
+                    peak_dbfs=peak_db,
+                )
                 thumbnail_time = clamp(info.duration * 0.25, 0.0, max(0.0, info.duration - 0.1))
                 image = build_source_preview_image(
                     info,
@@ -1686,6 +2210,10 @@ class GlideAudioApp(ctk.CTk):
         self.metric_vars["clipping"].set(clip_text)
         self.metric_vars["speech"].set(f"{diagnostics.speech_presence} ({int(round(diagnostics.speech_score * 100))}%)")
 
+        suggested_preset, suggestion_reason = suggest_cleanup_preset(info, diagnostics)
+        self._apply_preset(suggested_preset)
+        self.preset_hint_var.set(f"Suggested start: {suggested_preset} because {suggestion_reason}.")
+
         export_modes = [EXPORT_MODE_AUDIO, EXPORT_MODE_VIDEO] if info.has_video else [EXPORT_MODE_AUDIO]
         self.export_mode_menu.configure(values=export_modes)
         if self.export_mode_var.get() not in export_modes:
@@ -1694,7 +2222,10 @@ class GlideAudioApp(ctk.CTk):
 
         self._set_mode("idle")
         self._set_status("Analysis ready.")
-        self.preview_status_var.set("Diagnostics are ready. Generate the loop to audition original vs cleaned audio.")
+        self._set_preview_feedback(
+            "Diagnostics are ready. Generate the loop to audition original vs cleaned audio.",
+            "Ready",
+        )
         self.export_status_var.set("Export cleaned audio, or mux it back into MP4 if the source includes video.")
         self._log(
             f"Analysis ready | Peak {diagnostics.peak_dbfs:.1f} dBFS | "
@@ -1702,6 +2233,7 @@ class GlideAudioApp(ctk.CTk):
             f"Noise floor {diagnostics.noise_floor_dbfs:.1f} dBFS | "
             f"Speech {diagnostics.speech_presence}"
         )
+        self._log(f"Suggested preset: {suggested_preset} ({suggestion_reason})")
         self.after(80, self._start_preview_generation)
 
     def _current_filter_chain(self) -> str:
@@ -1728,8 +2260,9 @@ class GlideAudioApp(ctk.CTk):
 
         self._set_mode("preview")
         self._set_status("Building A/B preview...")
-        self.preview_status_var.set(
-            f"Rendering {preview_length:.0f}-second preview loop from {format_seconds(start)} for A/B listening."
+        self._set_preview_feedback(
+            f"Rendering {preview_length:.0f}-second preview loop from {format_seconds(start)} for A/B listening.",
+            "Generating",
         )
         self._stop_preview_audio()
         self._cleanup_preview_files()
@@ -1817,8 +2350,9 @@ class GlideAudioApp(ctk.CTk):
         self.preview_original_caption_var.set(self.preview_original_payload[2])
         self.preview_cleaned_caption_var.set(self.preview_cleaned_payload[2])
         self._refresh_preview_images()
-        self.preview_status_var.set(
-            f"Preview ready. Audition {preview_length:.0f} seconds from {format_seconds(start)} as original or cleaned audio."
+        self._set_preview_feedback(
+            f"Preview ready. Audition {preview_length:.0f} seconds from {format_seconds(start)} as original or cleaned audio.",
+            "Ready",
         )
         self._set_mode("idle")
         self._set_status("Preview ready.")
@@ -1849,8 +2383,12 @@ class GlideAudioApp(ctk.CTk):
 
             self._mci_send_command(f"play {PREVIEW_MCI_ALIAS} repeat")
             self.preview_active_variant = variant
+            self.preview_last_variant = variant
             self.preview_playback_state = "playing"
-            self.preview_status_var.set(f"Playing the {variant} preview loop. Pause or stop when you are done listening.")
+            self._set_preview_feedback(
+                f"Playing the {variant} preview loop. Switch cards instantly to compare the same section.",
+                f"Playing {variant.capitalize()}",
+            )
             self._set_status(f"Playing {variant} preview loop.")
             self._log(f"Playing {variant} preview loop: {target.name}")
             self._update_preview_transport_buttons()
@@ -1871,7 +2409,10 @@ class GlideAudioApp(ctk.CTk):
             self._mci_send_command(f"pause {PREVIEW_MCI_ALIAS}")
             self.preview_playback_state = "paused"
             variant = self.preview_active_variant or "current"
-            self.preview_status_var.set(f"{variant.capitalize()} preview paused. Press Resume to continue the loop.")
+            self._set_preview_feedback(
+                f"{variant.capitalize()} preview paused. Press Resume to continue the loop from the same point.",
+                f"Paused {variant.capitalize()}",
+            )
             self._set_status(f"Paused {variant} preview.")
             self._log(f"Paused {variant} preview loop.")
             self._update_preview_transport_buttons()
@@ -1886,7 +2427,10 @@ class GlideAudioApp(ctk.CTk):
             self._mci_send_command(f"resume {PREVIEW_MCI_ALIAS}")
             self.preview_playback_state = "playing"
             variant = self.preview_active_variant or "current"
-            self.preview_status_var.set(f"Playing the {variant} preview loop. Pause or stop when you are done listening.")
+            self._set_preview_feedback(
+                f"Playing the {variant} preview loop. Pause or switch cards to compare quickly.",
+                f"Playing {variant.capitalize()}",
+            )
             self._set_status(f"Playing {variant} preview loop.")
             self._log(f"Resumed {variant} preview loop.")
             self._update_preview_transport_buttons()
@@ -1897,9 +2441,49 @@ class GlideAudioApp(ctk.CTk):
     def _stop_preview_audio(self, announce: bool = False) -> None:
         self._close_preview_transport()
         if announce:
-            self.preview_status_var.set("Preview stopped. Use Play on Original or Cleaned to audition the loop again.")
+            self._set_preview_feedback(
+                "Preview stopped. Use Play on Original or Cleaned to audition the loop again.",
+                "Stopped",
+            )
             self._set_status("Preview stopped.")
             self._log("Stopped preview playback.")
+
+    def _reset_preview_audio(self) -> None:
+        variant = self.preview_active_variant or self.preview_last_variant
+        if variant is None:
+            self._set_preview_feedback(
+                "No active preview to reset yet. Start Original or Cleaned first.",
+                "Ready",
+            )
+            self._set_status("Preview ready.")
+            return
+
+        target = self.preview_original_wav if variant == "original" else self.preview_cleaned_wav
+        if target is None or not target.exists():
+            self._set_preview_feedback(
+                "Preview files are missing. Refresh the preview loop first.",
+                "Needs Refresh",
+            )
+            return
+
+        try:
+            if self.preview_playback_state == "stopped":
+                self._play_preview(variant)
+                return
+
+            self._mci_send_command(f"seek {PREVIEW_MCI_ALIAS} to start")
+            self._mci_send_command(f"play {PREVIEW_MCI_ALIAS} repeat")
+            self.preview_playback_state = "playing"
+            self._set_preview_feedback(
+                f"Restarted the {variant} preview loop from the beginning.",
+                f"Playing {variant.capitalize()}",
+            )
+            self._set_status(f"Restarted {variant} preview loop.")
+            self._log(f"Restarted {variant} preview loop.")
+            self._update_preview_transport_buttons()
+        except RuntimeError as exc:
+            messagebox.showerror(APP_NAME, str(exc))
+            self._close_preview_transport()
 
     def _close_preview_transport(self) -> None:
         if os.name == "nt":
@@ -1926,6 +2510,7 @@ class GlideAudioApp(ctk.CTk):
 
     def _on_preview_length_changed(self) -> None:
         if self.media_info is None:
+            self._persist_app_settings()
             return
         preview_length = min(parse_preview_length(self.preview_length_var.get()), self.media_info.duration)
         max_start = max(0.0, self.media_info.duration - preview_length)
@@ -1933,6 +2518,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_start_var.set(current)
         self.preview_slider.configure(from_=0.0, to=max(max_start, 1e-3), number_of_steps=max(1, int(max(max_start, 0.0) * 4) + 1))
         self.preview_time_label.configure(text=format_seconds(current))
+        self._persist_app_settings()
         if self.mode == "idle" and self.media_info is not None:
             self.after(40, self._start_preview_generation)
 
@@ -1941,7 +2527,7 @@ class GlideAudioApp(ctk.CTk):
         self.slider_value_labels[key].configure(text=f"{int(round(value * 100))}%")
         self.preset_var.set("Custom")
         if self.media_info is not None and self.mode == "idle":
-            self.preview_status_var.set("Settings changed. Refresh the preview loop to hear the update.")
+            self._set_preview_feedback("Settings changed. Refresh the preview loop to hear the update.", "Needs Refresh")
 
     def _apply_preset(self, preset_name: str) -> None:
         preset = PRESET_VALUES.get(preset_name)
@@ -1951,7 +2537,12 @@ class GlideAudioApp(ctk.CTk):
             self.slider_vars[key].set(preset[key])
             self.slider_value_labels[key].configure(text=f"{int(round(preset[key] * 100))}%")
         self.preset_var.set(preset_name)
+        self._persist_app_settings()
         if self.media_info is not None and self.mode == "idle":
+            self._set_preview_feedback(
+                f"Preset changed to {preset_name}. Rebuilding the preview loop.",
+                "Generating",
+            )
             self.after(40, self._start_preview_generation)
 
     def _on_export_mode_changed(self) -> None:
@@ -1962,6 +2553,21 @@ class GlideAudioApp(ctk.CTk):
             self.export_format_var.set(format_values[0])
         self.output_path = None
         self.output_label.configure(text=str(self.output_dir))
+        self._persist_app_settings()
+
+    def _on_export_format_changed(self) -> None:
+        self.output_path = None
+        self.output_label.configure(text=str(self.output_dir))
+        self._persist_app_settings()
+
+    def _on_loudness_target_changed(self) -> None:
+        self._persist_app_settings()
+        if self.media_info is not None and self.mode == "idle":
+            self._set_preview_feedback(
+                f"Loudness target changed to {self.loudness_target_var.get()}. Rebuilding the preview loop.",
+                "Generating",
+            )
+            self.after(40, self._start_preview_generation)
 
     def _choose_output_path(self) -> None:
         if self.media_path is None:
@@ -1970,7 +2576,11 @@ class GlideAudioApp(ctk.CTk):
 
         mode = self.export_mode_var.get()
         format_name = self.export_format_var.get().lower()
-        suggested_name = f"{self.media_path.stem}_glideaudio_cleaned.{format_name if mode == EXPORT_MODE_AUDIO else 'mp4'}"
+        suggested_name = suggested_output_filename(
+            self.media_path,
+            mode=mode,
+            format_name=self.export_format_var.get(),
+        )
         filetypes = [("All Files", "*.*")]
         if mode == EXPORT_MODE_AUDIO:
             filetypes = [(f"{self.export_format_var.get()} File", f"*.{format_name}")]
@@ -1986,7 +2596,233 @@ class GlideAudioApp(ctk.CTk):
         )
         if chosen:
             self.output_path = Path(chosen)
+            self.output_dir = self.output_path.parent
             self.output_label.configure(text=str(self.output_path))
+            self._persist_app_settings()
+
+    def _render_output_to_path(
+        self,
+        *,
+        media_path: Path,
+        media_info: MediaInfo,
+        output_path: Path,
+        mode: str,
+        format_name: str,
+        filter_chain: str,
+        ffmpeg_path: str,
+        ffprobe_path: str,
+    ) -> MediaInfo:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_output_path = output_path.with_name(f"{output_path.stem}.glideaudio-render{output_path.suffix}")
+        if temp_output_path.exists():
+            temp_output_path.unlink(missing_ok=True)
+
+        command = (
+            build_video_export_command(media_path, temp_output_path, ffmpeg_path, filter_chain=filter_chain)
+            if mode == EXPORT_MODE_VIDEO
+            else build_audio_export_command(
+                media_path,
+                temp_output_path,
+                ffmpeg_path,
+                filter_chain=filter_chain,
+                format_name=format_name,
+            )
+        )
+        self._queue_log(" ".join(command))
+
+        try:
+            run_ffmpeg_with_progress(
+                command,
+                duration=media_info.duration,
+                cancel_event=self.cancel_event,
+                log_callback=self._queue_log,
+                progress_callback=self._queue_progress,
+                process_callback=self._set_active_process,
+            )
+            verified_info = verify_rendered_output(
+                temp_output_path,
+                ffprobe_path=ffprobe_path,
+                expected_video=mode == EXPORT_MODE_VIDEO,
+                expected_audio=True,
+                source_duration=media_info.duration,
+            )
+            if output_path.exists():
+                output_path.unlink()
+            temp_output_path.replace(output_path)
+            return verified_info
+        except Exception:
+            temp_output_path.unlink(missing_ok=True)
+            raise
+
+    def _set_batch_item_state(
+        self,
+        item_id: str,
+        *,
+        status: str,
+        detail: str,
+        output_path: Optional[Path] = None,
+    ) -> None:
+        item = next((queued for queued in self.batch_queue if queued.item_id == item_id), None)
+        if item is None:
+            return
+        item.status = status
+        item.detail = detail
+        item.output_path = output_path
+        self._upsert_batch_item(item)
+        self._refresh_action_states()
+
+    def _complete_batch_queue(self, *, cancelled: bool, successes: int, failures: int, total: int) -> None:
+        self.progress.set(0.0 if cancelled else 1.0)
+        self._set_mode("idle")
+        self.active_process = None
+        if cancelled:
+            self._set_status("Batch queue stopped.")
+            self._update_batch_status(f"Queue stopped after {successes + failures}/{total} file(s).")
+            self.export_status_var.set("Batch queue stopped before finishing every file.")
+            self._log("Batch queue stopped.")
+            return
+
+        self._set_status("Batch queue complete.")
+        self.export_status_var.set(f"Batch queue finished. {successes} succeeded, {failures} failed.")
+        self._update_batch_status(f"Queue finished. {successes} succeeded, {failures} failed.")
+        self._log(f"Batch queue finished. {successes} succeeded, {failures} failed.")
+
+    def _stop_batch_queue(self) -> None:
+        if self.mode != "batch":
+            return
+        self.cancel_event.set()
+        process = self.active_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        self._update_batch_status("Stopping the active batch queue...")
+        self.export_status_var.set("Stopping batch queue...")
+        self._log("Stop requested for the active batch queue.")
+
+    def _start_batch_queue(self) -> None:
+        if self.mode != "idle" or not self.batch_queue:
+            return
+
+        requested_mode = self.export_mode_var.get()
+        format_name = self.export_format_var.get()
+        filter_chain = self._current_filter_chain()
+        ffmpeg_path = self._get_ffmpeg_path()
+        ffprobe_path = self._get_ffprobe_path()
+        queue_items = [item for item in self.batch_queue]
+
+        self.cancel_event.clear()
+        self.progress.set(0.0)
+        self._set_mode("batch")
+        self._set_status("Running batch queue...")
+        self.export_status_var.set(f"Batch rendering {len(queue_items)} queued file(s) with the current cleanup settings.")
+        self._update_batch_status(f"Running queue 0/{len(queue_items)}...")
+        self._persist_app_settings()
+
+        for item in queue_items:
+            self._set_batch_item_state(item.item_id, status="Queued", detail="Waiting to export.", output_path=None)
+
+        def worker() -> None:
+            successes = 0
+            failures = 0
+            total = len(queue_items)
+            try:
+                for index, item in enumerate(queue_items, start=1):
+                    if self.cancel_event.is_set():
+                        break
+
+                    self._post_ui(
+                        lambda item_id=item.item_id, index=index, total=total: self._update_batch_status(
+                            f"Running queue {index}/{total}..."
+                        )
+                    )
+                    self._post_ui(
+                        lambda item_id=item.item_id: self._set_batch_item_state(
+                            item_id,
+                            status="Running",
+                            detail="Rendering with the current export settings.",
+                            output_path=None,
+                        )
+                    )
+                    try:
+                        info = probe_media(item.path, ffprobe_path)
+                        if not info.has_audio:
+                            raise RuntimeError("The queued file has no audio stream to clean.")
+
+                        actual_mode = requested_mode
+                        detail_prefix = "Using requested export mode."
+                        if requested_mode == EXPORT_MODE_VIDEO and not info.has_video:
+                            actual_mode = EXPORT_MODE_AUDIO
+                            detail_prefix = "Audio-only fallback from repaired video mode."
+
+                        output_path = self._default_output_path(
+                            item.path,
+                            mode=actual_mode,
+                            format_name=format_name,
+                            allow_existing=False,
+                        )
+                        verified_info = self._render_output_to_path(
+                            media_path=item.path,
+                            media_info=info,
+                            output_path=output_path,
+                            mode=actual_mode,
+                            format_name=format_name,
+                            filter_chain=filter_chain,
+                            ffmpeg_path=ffmpeg_path,
+                            ffprobe_path=ffprobe_path,
+                        )
+                        summary = (
+                            f"{detail_prefix} Saved {output_path.name}"
+                            if actual_mode == EXPORT_MODE_AUDIO
+                            else f"Saved repaired video {output_path.name}"
+                        )
+                        self._post_ui(
+                            lambda item_id=item.item_id, detail=summary, output_path=output_path: self._set_batch_item_state(
+                                item_id,
+                                status="Done",
+                                detail=detail,
+                                output_path=output_path,
+                            )
+                        )
+                        self._queue_log(f"Batch export complete: {output_path} ({verified_info.audio_codec})")
+                        successes += 1
+                    except Exception as exc:
+                        if str(exc) == "cancelled":
+                            break
+                        friendly = friendly_export_error(
+                            str(exc),
+                            output_path=self._default_output_path(
+                                item.path,
+                                mode=EXPORT_MODE_AUDIO if requested_mode == EXPORT_MODE_VIDEO else requested_mode,
+                                format_name=format_name,
+                                allow_existing=True,
+                            ),
+                            format_name=format_name,
+                        )
+                        self._post_ui(
+                            lambda item_id=item.item_id, detail=friendly: self._set_batch_item_state(
+                                item_id,
+                                status="Failed",
+                                detail=shorten_middle(detail, 72),
+                                output_path=None,
+                            )
+                        )
+                        self._queue_log(f"Batch export failed for {item.path}: {friendly}")
+                        failures += 1
+                self._post_ui(
+                    lambda successes=successes, failures=failures, total=total: self._complete_batch_queue(
+                        cancelled=self.cancel_event.is_set(),
+                        successes=successes,
+                        failures=failures,
+                        total=total,
+                    )
+                )
+            except Exception as exc:
+                self._post_ui(lambda error_text=str(exc), trace_text=traceback.format_exc(): self._fail_task(error_text, trace_text))
+
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
 
     def _start_export(self) -> None:
         if self.media_info is None or self.media_path is None or self.mode != "idle":
@@ -2002,22 +2838,25 @@ class GlideAudioApp(ctk.CTk):
             if self.output_path is None:
                 return
 
+        output_path = self.output_path
+        if output_path.resolve().samefile(self.media_path) if output_path.exists() else output_path.resolve(strict=False) == self.media_path.resolve():
+            messagebox.showerror(APP_NAME, "Choose a different export path than the source file.")
+            return
+
+        if output_path.exists():
+            overwrite = messagebox.askyesno(
+                APP_NAME,
+                f"Replace the existing export?\n\n{output_path}",
+                icon="warning",
+            )
+            if not overwrite:
+                self.export_status_var.set("Export cancelled before render. Choose a different file name or folder.")
+                self._set_status("Export cancelled.")
+                return
+
         filter_chain = self._current_filter_chain()
         ffmpeg_path = self._get_ffmpeg_path()
-        output_path = self.output_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        command = (
-            build_video_export_command(self.media_path, output_path, ffmpeg_path, filter_chain=filter_chain)
-            if mode == EXPORT_MODE_VIDEO
-            else build_audio_export_command(
-                self.media_path,
-                output_path,
-                ffmpeg_path,
-                filter_chain=filter_chain,
-                format_name=self.export_format_var.get(),
-            )
-        )
+        ffprobe_path = self._get_ffprobe_path()
 
         self.cancel_event.clear()
         self.progress.set(0.0)
@@ -2025,24 +2864,32 @@ class GlideAudioApp(ctk.CTk):
         self._set_status("Exporting cleaned output...")
         self.export_status_var.set(f"Rendering {output_path.name} ...")
         self._log(f"Starting export -> {output_path}")
-        self._log(" ".join(command))
 
         def worker() -> None:
             try:
-                run_ffmpeg_with_progress(
-                    command,
-                    duration=self.media_info.duration,
-                    cancel_event=self.cancel_event,
-                    log_callback=self._queue_log,
-                    progress_callback=self._queue_progress,
-                    process_callback=self._set_active_process,
+                verified_info = self._render_output_to_path(
+                    media_path=self.media_path,
+                    media_info=self.media_info,
+                    output_path=output_path,
+                    mode=mode,
+                    format_name=self.export_format_var.get(),
+                    filter_chain=filter_chain,
+                    ffmpeg_path=ffmpeg_path,
+                    ffprobe_path=ffprobe_path,
                 )
-                self._post_ui(lambda: self._complete_export(output_path))
+                self._post_ui(lambda info=verified_info: self._complete_export(output_path, info))
             except Exception as exc:
                 if str(exc) == "cancelled":
                     self._post_ui(self._complete_cancelled_export)
                 else:
-                    self._post_ui(lambda error_text=str(exc), trace_text=traceback.format_exc(): self._fail_task(error_text, trace_text))
+                    self._post_ui(
+                        lambda error_text=str(exc), trace_text=traceback.format_exc(): self._fail_export(
+                            error_text,
+                            trace_text,
+                            output_path=output_path,
+                            format_name=self.export_format_var.get(),
+                        )
+                    )
 
         self.worker_thread = threading.Thread(target=worker, daemon=True)
         self.worker_thread.start()
@@ -2063,13 +2910,18 @@ class GlideAudioApp(ctk.CTk):
     def _set_active_process(self, process: Optional[subprocess.Popen]) -> None:
         self.active_process = process
 
-    def _complete_export(self, output_path: Path) -> None:
+    def _complete_export(self, output_path: Path, info: MediaInfo) -> None:
         self.progress.set(1.0)
+        if info.has_video:
+            summary = f"Verified repaired MP4 | {format_seconds(info.duration)} | {info.width}x{info.height}"
+        else:
+            summary = f"Verified cleaned audio | {format_seconds(info.duration)} | {info.audio_codec}"
         self.export_status_var.set(f"Export complete: {output_path.name}")
         self._set_mode("idle")
         self._set_status("Export complete.")
         self._log(f"Export complete: {output_path}")
-        messagebox.showinfo(APP_NAME, f"Saved cleaned output to:\n{output_path}")
+        self._log(summary)
+        messagebox.showinfo(APP_NAME, f"Saved cleaned output to:\n{output_path}\n\n{summary}")
 
     def _complete_cancelled_export(self) -> None:
         self.progress.set(0.0)
@@ -2077,6 +2929,18 @@ class GlideAudioApp(ctk.CTk):
         self._set_mode("idle")
         self._set_status("Export cancelled.")
         self._log("Export cancelled.")
+
+    def _fail_export(self, error_text: str, trace_text: str, *, output_path: Path, format_name: str) -> None:
+        self.cancel_event.clear()
+        self.active_process = None
+        self.progress.set(0.0)
+        self._set_mode("idle")
+        friendly = friendly_export_error(error_text, output_path=output_path, format_name=format_name)
+        self.export_status_var.set("Export failed. Review the message and try again.")
+        self._set_status("Export failed.")
+        self._log(trace_text)
+        self._log(f"Export failed: {friendly}")
+        messagebox.showerror(APP_NAME, friendly)
 
     def _queue_progress(self, value: float) -> None:
         self._post_ui(lambda: self.progress.set(clamp(value, 0.0, 1.0)))
@@ -2090,11 +2954,19 @@ class GlideAudioApp(ctk.CTk):
         has_source = self.media_info is not None
         has_preview = self.preview_original_wav is not None and self.preview_cleaned_wav is not None
         can_video = bool(self.media_info and self.media_info.has_video)
+        has_batch_items = bool(self.batch_queue)
+        has_batch_selection = bool(self._selected_batch_item_ids()) if hasattr(self, "batch_tree") else False
 
+        self.browse_button.configure(state="normal" if not busy else "disabled")
         self.analyze_button.configure(state="normal" if has_source and not busy else "disabled")
         self.refresh_preview_button.configure(state="normal" if has_source and not busy else "disabled")
         self.stop_preview_button.configure(
             state="normal" if self.preview_playback_state in {"playing", "paused"} and not busy else "disabled"
+        )
+        self.reset_preview_button.configure(
+            state="normal"
+            if has_preview and self.preview_last_variant is not None and not busy
+            else "disabled"
         )
         self.output_button.configure(state="normal" if has_source and not busy else "disabled")
         self.export_button.configure(state="normal" if has_source and not busy else "disabled")
@@ -2105,6 +2977,13 @@ class GlideAudioApp(ctk.CTk):
         self.export_mode_menu.configure(state="normal" if has_source and not busy else "disabled")
         self.export_format_menu.configure(state="normal" if has_source and not busy else "disabled")
         self.loudness_target_menu.configure(state="normal" if has_source and not busy else "disabled")
+        self.batch_add_button.configure(state="normal" if not busy else "disabled")
+        self.batch_queue_current_button.configure(state="normal" if has_source and not busy else "disabled")
+        self.batch_load_button.configure(state="normal" if has_batch_selection and not busy else "disabled")
+        self.batch_remove_button.configure(state="normal" if has_batch_selection and not busy else "disabled")
+        self.batch_clear_button.configure(state="normal" if has_batch_items and not busy else "disabled")
+        self.batch_run_button.configure(state="normal" if has_batch_items and not busy else "disabled")
+        self.batch_stop_button.configure(state="normal" if self.mode == "batch" else "disabled")
         self._update_preview_transport_buttons(has_preview=has_preview, busy=busy)
         if not can_video and self.export_mode_var.get() == EXPORT_MODE_VIDEO:
             self.export_mode_var.set(EXPORT_MODE_AUDIO)
@@ -2127,8 +3006,31 @@ class GlideAudioApp(ctk.CTk):
             cleaned_text = "Pause" if self.preview_playback_state == "playing" else "Resume"
 
         button_state = "normal" if has_preview and not busy else "disabled"
-        self.preview_original_toggle_button.configure(text=original_text, state=button_state)
-        self.preview_cleaned_toggle_button.configure(text=cleaned_text, state=button_state)
+        original_active = self.preview_active_variant == "original" and self.preview_playback_state in {"playing", "paused"}
+        cleaned_active = self.preview_active_variant == "cleaned" and self.preview_playback_state in {"playing", "paused"}
+
+        self.preview_original_toggle_button.configure(
+            text=original_text,
+            state=button_state,
+            fg_color=COLORS["primary"] if original_active else "transparent",
+            hover_color=COLORS["primary_hover"] if original_active else COLORS["surface_alt"],
+            text_color=COLORS["bg_primary"] if original_active else COLORS["text_primary"],
+            border_color=COLORS["primary"] if original_active else COLORS["border"],
+        )
+        self.preview_cleaned_toggle_button.configure(
+            text=cleaned_text,
+            state=button_state,
+            fg_color=COLORS["primary"] if cleaned_active else "transparent",
+            hover_color=COLORS["primary_hover"] if cleaned_active else COLORS["surface_alt"],
+            text_color=COLORS["bg_primary"] if cleaned_active else COLORS["text_primary"],
+            border_color=COLORS["primary"] if cleaned_active else COLORS["border"],
+        )
+        self.preview_original_frame.configure(border_color=COLORS["primary"] if original_active else COLORS["border"])
+        self.preview_cleaned_frame.configure(border_color=COLORS["primary"] if cleaned_active else COLORS["border"])
+
+    def _set_preview_feedback(self, message: str, state_label: str) -> None:
+        self.preview_status_var.set(message)
+        self.preview_transport_var.set(state_label)
 
     def _apply_scaled_image(
         self,
@@ -2238,6 +3140,9 @@ class GlideAudioApp(ctk.CTk):
         self._refresh_source_image()
 
     def _set_preview_placeholders(self) -> None:
+        self.preview_active_variant = None
+        self.preview_last_variant = None
+        self.preview_playback_state = "stopped"
         self.preview_original_payload = (
             np.asarray([], dtype=np.float32),
             "Original",
@@ -2250,6 +3155,7 @@ class GlideAudioApp(ctk.CTk):
         )
         self.preview_original_caption_var.set(self.preview_original_payload[2])
         self.preview_cleaned_caption_var.set(self.preview_cleaned_payload[2])
+        self._set_preview_feedback("Preview the original and cleaned loop after analysis.", "Idle")
         self._refresh_preview_images()
 
     def _cleanup_preview_files(self) -> None:
@@ -2260,11 +3166,28 @@ class GlideAudioApp(ctk.CTk):
         self.preview_cleaned_wav = None
         self.preview_original_payload = None
         self.preview_cleaned_payload = None
+        self.preview_active_variant = None
+        self.preview_last_variant = None
+        self.preview_playback_state = "stopped"
 
     def _clear_log(self) -> None:
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
+
+    def _persist_app_settings(self) -> None:
+        settings = {
+            "preset": self.preset_var.get(),
+            "preview_length": self.preview_length_var.get(),
+            "loudness_target": self.loudness_target_var.get(),
+            "output_dir": str(self.output_dir),
+            "export_mode": self.export_mode_var.get(),
+            "export_format": self.export_format_var.get(),
+        }
+        try:
+            save_app_settings(settings)
+        except Exception as exc:
+            self._log(f"Could not save settings: {exc}")
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -2310,6 +3233,7 @@ class GlideAudioApp(ctk.CTk):
                 process.terminate()
             except Exception:
                 pass
+        self._persist_app_settings()
         self._stop_preview_audio()
         self._cleanup_preview_files()
         self.destroy()
