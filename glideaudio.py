@@ -64,60 +64,60 @@ COLORS = {
 
 PRESET_VALUES: dict[str, dict[str, float]] = {
     "Custom": {
-        "noise": 0.40,
-        "clarity": 0.35,
-        "de_echo": 0.20,
-        "de_hum": 0.25,
-        "leveling": 0.45,
-        "limiter": 0.50,
+        "noise": 0.28,
+        "clarity": 0.36,
+        "de_echo": 0.10,
+        "de_hum": 0.14,
+        "leveling": 0.38,
+        "limiter": 0.64,
     },
     "Clean Voice": {
-        "noise": 0.40,
-        "clarity": 0.45,
-        "de_echo": 0.18,
-        "de_hum": 0.15,
-        "leveling": 0.48,
-        "limiter": 0.45,
+        "noise": 0.28,
+        "clarity": 0.36,
+        "de_echo": 0.08,
+        "de_hum": 0.10,
+        "leveling": 0.32,
+        "limiter": 0.62,
     },
     "Noisy Room": {
-        "noise": 0.78,
-        "clarity": 0.52,
-        "de_echo": 0.52,
-        "de_hum": 0.42,
-        "leveling": 0.54,
-        "limiter": 0.48,
+        "noise": 0.68,
+        "clarity": 0.48,
+        "de_echo": 0.44,
+        "de_hum": 0.34,
+        "leveling": 0.42,
+        "limiter": 0.74,
     },
     "Screen Recording Voiceover": {
-        "noise": 0.34,
-        "clarity": 0.56,
-        "de_echo": 0.08,
-        "de_hum": 0.25,
-        "leveling": 0.58,
-        "limiter": 0.42,
+        "noise": 0.20,
+        "clarity": 0.50,
+        "de_echo": 0.04,
+        "de_hum": 0.18,
+        "leveling": 0.44,
+        "limiter": 0.58,
     },
     "Podcast Speech": {
-        "noise": 0.26,
-        "clarity": 0.44,
-        "de_echo": 0.10,
-        "de_hum": 0.18,
-        "leveling": 0.64,
-        "limiter": 0.56,
+        "noise": 0.16,
+        "clarity": 0.38,
+        "de_echo": 0.04,
+        "de_hum": 0.12,
+        "leveling": 0.48,
+        "limiter": 0.66,
     },
     "Social Clip Speech": {
-        "noise": 0.48,
-        "clarity": 0.62,
-        "de_echo": 0.22,
-        "de_hum": 0.22,
-        "leveling": 0.72,
-        "limiter": 0.72,
+        "noise": 0.34,
+        "clarity": 0.56,
+        "de_echo": 0.14,
+        "de_hum": 0.18,
+        "leveling": 0.60,
+        "limiter": 0.80,
     },
     "Loudness Match Only": {
         "noise": 0.00,
         "clarity": 0.08,
         "de_echo": 0.00,
         "de_hum": 0.00,
-        "leveling": 0.86,
-        "limiter": 0.64,
+        "leveling": 0.66,
+        "limiter": 0.72,
     },
 }
 
@@ -712,26 +712,26 @@ def build_audio_filter_chain(
         )
 
     if noise > 0.02:
-        reduction = 6.0 + noise * 18.0
-        noise_floor = -58.0 + noise * 18.0
+        reduction = 4.0 + noise * 14.0
+        noise_floor = -60.0 + noise * 16.0
         filters.append(f"afftdn=nr={reduction:.1f}:nf={noise_floor:.1f}")
 
     if de_echo > 0.02:
-        mud_cut = 1.8 + de_echo * 5.2
-        gate_ratio = 1.2 + de_echo * 2.8
-        threshold = 0.003 + (1.0 - de_echo) * 0.002
+        mud_cut = 1.2 + de_echo * 4.0
+        gate_ratio = 1.15 + de_echo * 1.65
+        threshold = 0.0026 + (1.0 - de_echo) * 0.0014
         filters.extend(
             [
                 f"equalizer=f=180:t=q:w=1.1:g=-{mud_cut:.1f}",
                 f"equalizer=f=420:t=q:w=1.0:g=-{mud_cut * 0.8:.1f}",
-                f"agate=threshold={threshold:.4f}:ratio={gate_ratio:.2f}:attack=12:release=260",
+                f"agate=threshold={threshold:.4f}:ratio={gate_ratio:.2f}:attack=8:release=220",
             ]
         )
 
     if clarity > 0.02:
-        presence = 2.0 + clarity * 5.0
-        air = 1.0 + clarity * 3.5
-        low_mid_cut = clarity * 2.8
+        presence = 1.6 + clarity * 3.4
+        air = 0.8 + clarity * 2.2
+        low_mid_cut = clarity * 1.8
         filters.extend(
             [
                 f"equalizer=f=250:t=q:w=1.1:g=-{low_mid_cut:.1f}",
@@ -742,17 +742,18 @@ def build_audio_filter_chain(
 
     if leveling > 0.02:
         gaussian_size = odd_int(9 + leveling * 20, minimum=5)
-        max_gain = 3.0 + leveling * 17.0
-        peak = 0.84 + leveling * 0.10
+        max_gain = 2.4 + leveling * 10.5
+        peak = 0.78 + leveling * 0.08
         filters.append(f"dynaudnorm=f=200:g={gaussian_size}:m={max_gain:.1f}:p={peak:.2f}")
 
     if loudness_target is not None:
-        filters.append(f"loudnorm=I={loudness_target:.1f}:TP=-1.5:LRA=11")
+        filters.append(f"loudnorm=I={loudness_target:.1f}:TP=-2.0:LRA=11")
 
     if limiter > 0.02:
-        limit = 0.97 - limiter * 0.09
-        release = 35.0 + limiter * 85.0
-        filters.append(f"alimiter=limit={limit:.2f}:attack=4:release={release:.0f}")
+        filters.append("aresample=96000")
+        limit = 0.95 - limiter * 0.08
+        release = 45.0 + limiter * 95.0
+        filters.append(f"alimiter=limit={limit:.2f}:attack=4:release={release:.0f}:level=0:latency=1:asc=1:asc_level=0.35")
 
     filters.append("aresample=48000")
     return ",".join(filters)

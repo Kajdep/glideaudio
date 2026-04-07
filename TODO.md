@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Tune cleanup presets against real voice samples
-  Linear: `ALL-45`
-  Validate the FFmpeg cleanup chain on clean speech, noisy-room speech, and audio-only sources, then retune preset defaults from actual results.
+- [ ] Harden export validation and failure handling
+  Linear: `ALL-46`
+  Improve overwrite behavior, surface codec and path errors clearly, and verify produced files before reporting success.
 
 ## Done
 
@@ -16,11 +16,11 @@
   Linear: `ALL-44`
   Added per-card play/pause controls, stop/reset transport actions, clearer preview-state feedback, and more obvious A/B listening flow.
 
-## Queue
+- [x] Tune cleanup presets against real voice samples
+  Linear: `ALL-45`
+  Retuned the cleanup presets and FFmpeg chain against clean speech, noisy-room speech, and audio-only samples so the defaults stay creator-friendly instead of DAW-heavy.
 
-- [ ] Harden export validation and failure handling
-  Linear: `ALL-46`
-  Improve overwrite behavior, surface codec and path errors clearly, and verify produced files before reporting success.
+## Queue
 
 - [ ] Persist session settings
   Linear: `ALL-47`
