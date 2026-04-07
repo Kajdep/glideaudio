@@ -6,7 +6,7 @@
 - Slug: `glideaudio`
 - Repo path: `D:\glide-apps\glideaudio`
 - GitHub repo: `https://github.com/Kajdep/glideaudio`
-- Product status: `planning`
+- Product status: `desktop prototype packaged for testing`
 - Platform: `Windows desktop`
 
 ## Positioning
@@ -24,6 +24,10 @@
 - voice clarity enhancement
 - de-echo / de-hum controls
 - loudness leveling and limiter
+- preview transport with play / pause / stop / reset
+- suggested cleanup preset from diagnostics
+- session settings persistence
+- batch queue export
 - cleaned audio export or repaired video export
 
 ## URLs
@@ -31,15 +35,17 @@
 - Planned glidevideo.com page: `https://www.glidevideo.com/glideaudio`
 - itch.io listing: `_TBD_`
 - Microsoft Store listing: `_TBD_`
-- Privacy policy URL: `_TBD_`
+- Privacy policy URL: `Hosted URL still TBD. Local policy file: D:\glide-apps\glideaudio\PRIVACY_POLICY.md`
 - Support page or support email: `_TBD_`
 
 ## Submission Assets
 
-- App icon: `_TBD_`
-- Store logo set: `_TBD_`
-- Cover image: `_TBD_`
-- Screenshot set: `_TBD_`
+- App icon: `D:\glide-apps\glideaudio\glideaudio.ico`
+- Store logo set: `D:\glide-apps\glideaudio\glideaudio-logo.png`
+- Cover image: `D:\glide-apps\glideaudio\assets\store\glideaudio-cover.png`
+- Hero image: `D:\glide-apps\glideaudio\assets\store\glideaudio-store-hero.png`
+- Square store art: `D:\glide-apps\glideaudio\assets\store\glideaudio-store-square.png`
+- Screenshot set: `Still needed from the live app UI`
 - Trailer or demo video: `_TBD_`
 
 ## Pricing
@@ -58,13 +64,14 @@
 
 ## Technical Notes
 
-- Packaging format: `_TBD_`
-- Supported architecture: `x64 expected`
-- Minimum OS: `_TBD_`
-- RAM requirement: `_TBD_`
-- Disk requirement: `_TBD_`
+- Packaging format: `PyInstaller single-file Windows executable plus win64 zip bundle`
+- Supported architecture: `x64`
+- Minimum OS: `Windows 10 version 1809 or later, or Windows 11`
+- RAM requirement: `4 GB recommended pending final QA confirmation`
+- Disk requirement: `At least 250 MB recommended for app, temp renders, and exports`
 - Internet required for core workflow: `no for the core workflow`
 - External services used: `none in the core plan`
+- Release artifact: `D:\glide-apps\glideaudio\release\GlideAudio-0.1.0-win64.zip`
 
 ## Keywords
 
@@ -83,5 +90,5 @@
 - [ ] screenshot list
 - [ ] trailer/demo
 - [ ] Microsoft Store identity values
-- [ ] final packaging format
-- [ ] final system requirements
+- [ ] final hosted submission URLs
+- [ ] final system requirements confirmation from manual QA

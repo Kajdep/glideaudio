@@ -11,7 +11,7 @@
 
 ## Public Assets
 
-- Cover image file: `_TBD_`
+- Cover image file: `D:\glide-apps\glideaudio\assets\store\glideaudio-cover.png`
 - Screenshots to upload:
   - `_TBD_`
   - `_TBD_`
@@ -53,11 +53,11 @@ GlideAudio is a focused desktop app for cleaning spoken audio in video and audio
 
 ## Privacy
 
-_TBD_
+Hosted privacy URL is still TBD, but the packaged release includes `PRIVACY_POLICY.md`.
 
 ## System Notes
 
-Windows desktop utility. Final system requirements and release artifact details still need to be filled.
+Windows desktop utility packaged as a zip with a single-file executable and bundled docs.
 ```
 
 ## Tags
@@ -70,15 +70,18 @@ Windows desktop utility. Final system requirements and release artifact details 
 
 ## Upload Artifact
 
-- Primary file to upload: `_TBD_`
-- Alternate file or installer: `_TBD_`
+- Primary file to upload: `D:\glide-apps\glideaudio\release\GlideAudio-0.1.0-win64.zip`
+- Alternate file or installer: `D:\glide-apps\glideaudio\release\win64\GlideAudio.exe`
 - Butler channel if used: `_TBD_`
-- Version label: `_TBD_`
+- Version label: `0.1.0`
 
 ## Installation Notes
 
 ```text
-_TBD_
+Download the win64 zip, extract it, and launch GlideAudio.exe.
+
+If FFmpeg is bundled in the release package, keep the included ffmpeg folder next to the executable.
+If FFmpeg is not bundled, make sure ffmpeg and ffprobe are available on PATH before launch.
 ```
 
 ## Release Notes
@@ -92,13 +95,12 @@ _TBD_
 ## External Links
 
 - Website: `https://www.glidevideo.com/glideaudio` planned
-- Privacy policy: `_TBD_`
+- Privacy policy: `Hosted URL still TBD. Packaged release includes PRIVACY_POLICY.md`
 - Support: `_TBD_`
 
 ## Final Check
 
 - [ ] price chosen
-- [ ] cover image exported
 - [ ] screenshots are current
 - [ ] upload artifact path filled
 - [ ] install notes filled

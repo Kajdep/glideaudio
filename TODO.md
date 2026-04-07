@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Finish packaging and release assets
-  Linear: `ALL-48`
-  Add branded icon assets, privacy policy, store collateral, and a final Windows release build pass.
+- [ ] No active repo TODO item
+  Linear: `ALL-25`
+  Remaining follow-up is outside the code path: live support/privacy URLs, store screenshots, and store identity values.
 
 ## Done
 
@@ -35,5 +35,9 @@
 - [x] Add batch queue support
   Linear: `ALL-50`
   Added a simple batch queue with per-item state, current-file queuing, selection/loading, and safe export-path reuse for repeated runs.
+
+- [x] Finish packaging and release assets
+  Linear: `ALL-48`
+  Added branded icon assets, a local privacy policy, store collateral scaffolding, and a successful Windows release build pass.
 
 ## Queue
