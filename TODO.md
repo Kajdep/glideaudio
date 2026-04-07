@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Improve diagnostics and preset suggestions
-  Linear: `ALL-49`
-  Make the speech/noise analysis more trustworthy and use it to suggest a starting preset automatically.
+- [ ] Persist session settings
+  Linear: `ALL-47`
+  Save last-used preset, preview length, loudness target, output folder, and export mode between launches.
 
 ## Done
 
@@ -24,11 +24,11 @@
   Linear: `ALL-46`
   Added explicit overwrite confirmation, verified temp renders before success, clearer FFmpeg/path failures, and safer repaired-video export checks.
 
-## Queue
+- [x] Improve diagnostics and preset suggestions
+  Linear: `ALL-49`
+  Strengthened the analysis heuristics, added a safer starting-preset recommendation, and reduced misleading speech/noise guesses.
 
-- [ ] Persist session settings
-  Linear: `ALL-47`
-  Save last-used preset, preview length, loudness target, output folder, and export mode between launches.
+## Queue
 
 - [ ] Finish packaging and release assets
   Linear: `ALL-48`

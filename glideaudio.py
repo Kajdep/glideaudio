@@ -538,35 +538,78 @@ def loudnorm_probe(path: Path, ffmpeg_path: str, max_seconds: float = ANALYSIS_M
         return None
 
 
-def analyze_audio_samples(samples: np.ndarray, sample_rate: int, *, average_lufs: Optional[float] = None) -> AudioDiagnostics:
+def peak_volume_probe(path: Path, ffmpeg_path: str, max_seconds: float = ANALYSIS_MAX_SECONDS) -> Optional[float]:
+    command = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-i",
+        str(path),
+        "-t",
+        f"{max_seconds:.3f}",
+        "-vn",
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-",
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        **subprocess_window_kwargs(),
+    )
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    match = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", combined)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def analyze_audio_samples(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    average_lufs: Optional[float] = None,
+    peak_dbfs: Optional[float] = None,
+) -> AudioDiagnostics:
     if samples.size == 0:
         raise RuntimeError("The selected file does not contain readable audio samples.")
 
     peak = float(np.max(np.abs(samples)))
-    peak_db = dbfs(peak)
+    peak_db = peak_dbfs if peak_dbfs is not None else dbfs(peak)
     rms = float(np.sqrt(np.mean(samples * samples) + 1e-12))
     rms_db = dbfs(rms)
 
     frame_rms = _frame_rms(samples, sample_rate)
     if frame_rms.size:
-        active_windows = frame_rms[frame_rms > max(np.percentile(frame_rms, 20), 1e-5)]
-        noise_floor = float(np.percentile(active_windows if active_windows.size else frame_rms, 12))
+        noise_threshold = max(np.percentile(frame_rms, 40), 1e-6)
+        noise_windows = frame_rms[frame_rms <= noise_threshold]
+        noise_floor = float(np.percentile(noise_windows if noise_windows.size else frame_rms, 25))
     else:
         noise_floor = rms
     noise_floor_db = dbfs(noise_floor)
 
-    clip_events = int(np.count_nonzero(np.abs(samples) >= 0.995))
-    if clip_events > 0 or peak_db >= -0.6:
+    clip_events = int(np.count_nonzero(np.abs(samples) >= 0.9995))
+    if peak_dbfs is not None and peak_dbfs <= -1.5:
+        clip_events = 0
+    if peak_db >= -0.3 or clip_events > 24:
         clipping_risk = "High"
-    elif peak_db >= -2.0:
+    elif peak_db >= -1.5 or clip_events > 0:
         clipping_risk = "Watch"
     else:
         clipping_risk = "Low"
 
     speech_score = float(estimate_speech_score(samples, sample_rate))
-    if speech_score >= 0.62:
+    if speech_score >= 0.66:
         speech_presence = "Strong"
-    elif speech_score >= 0.38:
+    elif speech_score >= 0.44:
         speech_presence = "Moderate"
     else:
         speech_presence = "Weak"
@@ -580,6 +623,20 @@ def analyze_audio_samples(samples: np.ndarray, sample_rate: int, *, average_lufs
         speech_score=speech_score,
         clip_events=clip_events,
     )
+
+
+def suggest_cleanup_preset(info: MediaInfo, diagnostics: AudioDiagnostics) -> tuple[str, str]:
+    if diagnostics.peak_dbfs >= -1.2 and diagnostics.average_lufs >= -14.8:
+        return "Loudness Match Only", "already loud and close to finished"
+    if diagnostics.noise_floor_dbfs > -20.5 or (
+        diagnostics.speech_score < 0.46 and diagnostics.noise_floor_dbfs > -23.0
+    ):
+        return "Noisy Room", "speech sits in noticeable room noise"
+    if not info.has_video and diagnostics.noise_floor_dbfs <= -25.0 and diagnostics.speech_score >= 0.56:
+        return "Podcast Speech", "audio-only speech is already fairly clean"
+    if info.has_video and diagnostics.noise_floor_dbfs <= -23.5 and diagnostics.speech_score >= 0.58:
+        return "Screen Recording Voiceover", "voice track is controlled and fairly clean"
+    return "Clean Voice", "speech needs a light cleanup pass"
 
 
 def fit_cover(image: Image.Image, target_size: tuple[int, int]) -> Image.Image:
@@ -1026,6 +1083,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_transport_var = ctk.StringVar(value="Idle")
         self.preview_original_caption_var = ctk.StringVar(value="Generate the preview loop to hear the untouched segment.")
         self.preview_cleaned_caption_var = ctk.StringVar(value="The processed loop will show here after preview render.")
+        self.preset_hint_var = ctk.StringVar(value="Load a source and GlideAudio will suggest a starting preset.")
         self.export_status_var = ctk.StringVar(value="Choose an output mode and render the repaired file.")
         self.status_var = ctk.StringVar(value="Ready.")
 
@@ -1271,6 +1329,14 @@ class GlideAudioApp(ctk.CTk):
             dropdown_fg_color=COLORS["surface_alt"],
         )
         self.preset_menu.grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(
+            self.cleanup_card,
+            textvariable=self.preset_hint_var,
+            font=ui_font(12),
+            text_color=COLORS["text_secondary"],
+            justify="left",
+            wraplength=430,
+        ).pack(fill="x", padx=18, pady=(0, 10))
 
         sliders = ctk.CTkFrame(self.cleanup_card, fg_color="transparent")
         sliders.pack(fill="x", padx=18, pady=(0, 18))
@@ -1690,6 +1756,7 @@ class GlideAudioApp(ctk.CTk):
         self.source_meta_var.set("Inspecting file and audio stream.")
         self.audio_meta_var.set(str(path))
         self._set_preview_feedback("Analyzing source before preview generation.", "Analyzing")
+        self.preset_hint_var.set("Inspecting the source to suggest a starting preset.")
         self.export_status_var.set("Choose an output mode and render the repaired file.")
         self._set_source_placeholder()
         self._set_preview_placeholders()
@@ -1719,15 +1786,22 @@ class GlideAudioApp(ctk.CTk):
                 if not info.has_audio:
                     raise RuntimeError("The selected file has no audio stream to clean.")
                 analysis_window = min(info.duration, ANALYSIS_MAX_SECONDS)
+                analysis_sample_rate = min(max(info.sample_rate or ANALYSIS_SAMPLE_RATE, ANALYSIS_SAMPLE_RATE), 48000)
                 samples = decode_audio_samples(
                     path,
                     ffmpeg_path,
                     duration=analysis_window,
-                    sample_rate=ANALYSIS_SAMPLE_RATE,
+                    sample_rate=analysis_sample_rate,
                     channels=1,
                 )
                 loudness = loudnorm_probe(path, ffmpeg_path, max_seconds=analysis_window)
-                diagnostics = analyze_audio_samples(samples, ANALYSIS_SAMPLE_RATE, average_lufs=loudness)
+                peak_db = peak_volume_probe(path, ffmpeg_path, max_seconds=analysis_window)
+                diagnostics = analyze_audio_samples(
+                    samples,
+                    analysis_sample_rate,
+                    average_lufs=loudness,
+                    peak_dbfs=peak_db,
+                )
                 thumbnail_time = clamp(info.duration * 0.25, 0.0, max(0.0, info.duration - 0.1))
                 image = build_source_preview_image(
                     info,
@@ -1777,6 +1851,10 @@ class GlideAudioApp(ctk.CTk):
         self.metric_vars["clipping"].set(clip_text)
         self.metric_vars["speech"].set(f"{diagnostics.speech_presence} ({int(round(diagnostics.speech_score * 100))}%)")
 
+        suggested_preset, suggestion_reason = suggest_cleanup_preset(info, diagnostics)
+        self._apply_preset(suggested_preset)
+        self.preset_hint_var.set(f"Suggested start: {suggested_preset} because {suggestion_reason}.")
+
         export_modes = [EXPORT_MODE_AUDIO, EXPORT_MODE_VIDEO] if info.has_video else [EXPORT_MODE_AUDIO]
         self.export_mode_menu.configure(values=export_modes)
         if self.export_mode_var.get() not in export_modes:
@@ -1796,6 +1874,7 @@ class GlideAudioApp(ctk.CTk):
             f"Noise floor {diagnostics.noise_floor_dbfs:.1f} dBFS | "
             f"Speech {diagnostics.speech_presence}"
         )
+        self._log(f"Suggested preset: {suggested_preset} ({suggestion_reason})")
         self.after(80, self._start_preview_generation)
 
     def _current_filter_chain(self) -> str:

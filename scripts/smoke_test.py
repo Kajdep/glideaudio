@@ -74,6 +74,7 @@ def main() -> None:
             samples,
             glideaudio.ANALYSIS_SAMPLE_RATE,
             average_lufs=glideaudio.loudnorm_probe(sample_mp4, ffmpeg, 6),
+            peak_dbfs=glideaudio.peak_volume_probe(sample_mp4, ffmpeg, 6),
         )
         filter_chain = glideaudio.build_audio_filter_chain(
             0.5,
