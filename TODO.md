@@ -2,9 +2,9 @@
 
 ## Current
 
-- [ ] Add better preview transport
-  Linear: `ALL-44`
-  Add play/pause controls directly to the preview cards, improve playback-state feedback, and keep the A/B listening flow obvious.
+- [ ] Tune cleanup presets against real voice samples
+  Linear: `ALL-45`
+  Validate the FFmpeg cleanup chain on clean speech, noisy-room speech, and audio-only sources, then retune preset defaults from actual results.
 
 ## Done
 
@@ -12,11 +12,11 @@
   Linear: `ALL-43`
   Flattened the rendered preview surfaces, fixed the nested-card look, and improved readability across common window widths.
 
-## Queue
+- [x] Add better preview transport
+  Linear: `ALL-44`
+  Added per-card play/pause controls, stop/reset transport actions, clearer preview-state feedback, and more obvious A/B listening flow.
 
-- [ ] Tune cleanup presets against real voice samples
-  Linear: `ALL-45`
-  Validate the FFmpeg cleanup chain on clean speech, noisy-room speech, and audio-only sources, then retune preset defaults from actual results.
+## Queue
 
 - [ ] Harden export validation and failure handling
   Linear: `ALL-46`

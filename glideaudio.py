@@ -945,6 +945,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_original_wav: Optional[Path] = None
         self.preview_cleaned_wav: Optional[Path] = None
         self.preview_active_variant: Optional[str] = None
+        self.preview_last_variant: Optional[str] = None
         self.preview_playback_state = "stopped"
 
         self.mode = "idle"
@@ -961,6 +962,7 @@ class GlideAudioApp(ctk.CTk):
         self.audio_meta_var = ctk.StringVar(value="No source loaded yet.")
         self.source_preview_caption_var = ctk.StringVar(value="Load media to inspect waveform or poster frame.")
         self.preview_status_var = ctk.StringVar(value="Preview the original and cleaned loop after analysis.")
+        self.preview_transport_var = ctk.StringVar(value="Idle")
         self.preview_original_caption_var = ctk.StringVar(value="Generate the preview loop to hear the untouched segment.")
         self.preview_cleaned_caption_var = ctk.StringVar(value="The processed loop will show here after preview render.")
         self.export_status_var = ctk.StringVar(value="Choose an output mode and render the repaired file.")
@@ -1285,6 +1287,33 @@ class GlideAudioApp(ctk.CTk):
         )
         self.refresh_preview_button.pack(side="left")
 
+        transport_state = ctk.CTkLabel(
+            second_row,
+            textvariable=self.preview_transport_var,
+            font=mono_font(12, "bold"),
+            text_color=COLORS["primary_soft"],
+            fg_color=COLORS["bg_tertiary"],
+            corner_radius=12,
+            width=124,
+            height=34,
+        )
+        transport_state.pack(side="right")
+
+        self.reset_preview_button = ctk.CTkButton(
+            second_row,
+            text="Reset",
+            command=self._reset_preview_audio,
+            fg_color="transparent",
+            hover_color=COLORS["surface_alt"],
+            border_width=1,
+            border_color=COLORS["border"],
+            font=ui_font(13, "bold"),
+            height=36,
+            corner_radius=14,
+            width=88,
+        )
+        self.reset_preview_button.pack(side="right", padx=(0, 10))
+
         self.stop_preview_button = ctk.CTkButton(
             second_row,
             text="Stop",
@@ -1296,8 +1325,9 @@ class GlideAudioApp(ctk.CTk):
             font=ui_font(13, "bold"),
             height=36,
             corner_radius=14,
+            width=88,
         )
-        self.stop_preview_button.pack(side="left", padx=(10, 0))
+        self.stop_preview_button.pack(side="right", padx=(0, 10))
 
         ctk.CTkLabel(
             self.preview_card,
@@ -1598,7 +1628,7 @@ class GlideAudioApp(ctk.CTk):
         self.source_status_var.set(f"Loading {shorten_middle(path.name, 44)} ...")
         self.source_meta_var.set("Inspecting file and audio stream.")
         self.audio_meta_var.set(str(path))
-        self.preview_status_var.set("Analyzing source before preview generation.")
+        self._set_preview_feedback("Analyzing source before preview generation.", "Analyzing")
         self.export_status_var.set("Choose an output mode and render the repaired file.")
         self._set_source_placeholder()
         self._set_preview_placeholders()
@@ -1694,7 +1724,10 @@ class GlideAudioApp(ctk.CTk):
 
         self._set_mode("idle")
         self._set_status("Analysis ready.")
-        self.preview_status_var.set("Diagnostics are ready. Generate the loop to audition original vs cleaned audio.")
+        self._set_preview_feedback(
+            "Diagnostics are ready. Generate the loop to audition original vs cleaned audio.",
+            "Ready",
+        )
         self.export_status_var.set("Export cleaned audio, or mux it back into MP4 if the source includes video.")
         self._log(
             f"Analysis ready | Peak {diagnostics.peak_dbfs:.1f} dBFS | "
@@ -1728,8 +1761,9 @@ class GlideAudioApp(ctk.CTk):
 
         self._set_mode("preview")
         self._set_status("Building A/B preview...")
-        self.preview_status_var.set(
-            f"Rendering {preview_length:.0f}-second preview loop from {format_seconds(start)} for A/B listening."
+        self._set_preview_feedback(
+            f"Rendering {preview_length:.0f}-second preview loop from {format_seconds(start)} for A/B listening.",
+            "Generating",
         )
         self._stop_preview_audio()
         self._cleanup_preview_files()
@@ -1817,8 +1851,9 @@ class GlideAudioApp(ctk.CTk):
         self.preview_original_caption_var.set(self.preview_original_payload[2])
         self.preview_cleaned_caption_var.set(self.preview_cleaned_payload[2])
         self._refresh_preview_images()
-        self.preview_status_var.set(
-            f"Preview ready. Audition {preview_length:.0f} seconds from {format_seconds(start)} as original or cleaned audio."
+        self._set_preview_feedback(
+            f"Preview ready. Audition {preview_length:.0f} seconds from {format_seconds(start)} as original or cleaned audio.",
+            "Ready",
         )
         self._set_mode("idle")
         self._set_status("Preview ready.")
@@ -1849,8 +1884,12 @@ class GlideAudioApp(ctk.CTk):
 
             self._mci_send_command(f"play {PREVIEW_MCI_ALIAS} repeat")
             self.preview_active_variant = variant
+            self.preview_last_variant = variant
             self.preview_playback_state = "playing"
-            self.preview_status_var.set(f"Playing the {variant} preview loop. Pause or stop when you are done listening.")
+            self._set_preview_feedback(
+                f"Playing the {variant} preview loop. Switch cards instantly to compare the same section.",
+                f"Playing {variant.capitalize()}",
+            )
             self._set_status(f"Playing {variant} preview loop.")
             self._log(f"Playing {variant} preview loop: {target.name}")
             self._update_preview_transport_buttons()
@@ -1871,7 +1910,10 @@ class GlideAudioApp(ctk.CTk):
             self._mci_send_command(f"pause {PREVIEW_MCI_ALIAS}")
             self.preview_playback_state = "paused"
             variant = self.preview_active_variant or "current"
-            self.preview_status_var.set(f"{variant.capitalize()} preview paused. Press Resume to continue the loop.")
+            self._set_preview_feedback(
+                f"{variant.capitalize()} preview paused. Press Resume to continue the loop from the same point.",
+                f"Paused {variant.capitalize()}",
+            )
             self._set_status(f"Paused {variant} preview.")
             self._log(f"Paused {variant} preview loop.")
             self._update_preview_transport_buttons()
@@ -1886,7 +1928,10 @@ class GlideAudioApp(ctk.CTk):
             self._mci_send_command(f"resume {PREVIEW_MCI_ALIAS}")
             self.preview_playback_state = "playing"
             variant = self.preview_active_variant or "current"
-            self.preview_status_var.set(f"Playing the {variant} preview loop. Pause or stop when you are done listening.")
+            self._set_preview_feedback(
+                f"Playing the {variant} preview loop. Pause or switch cards to compare quickly.",
+                f"Playing {variant.capitalize()}",
+            )
             self._set_status(f"Playing {variant} preview loop.")
             self._log(f"Resumed {variant} preview loop.")
             self._update_preview_transport_buttons()
@@ -1897,9 +1942,49 @@ class GlideAudioApp(ctk.CTk):
     def _stop_preview_audio(self, announce: bool = False) -> None:
         self._close_preview_transport()
         if announce:
-            self.preview_status_var.set("Preview stopped. Use Play on Original or Cleaned to audition the loop again.")
+            self._set_preview_feedback(
+                "Preview stopped. Use Play on Original or Cleaned to audition the loop again.",
+                "Stopped",
+            )
             self._set_status("Preview stopped.")
             self._log("Stopped preview playback.")
+
+    def _reset_preview_audio(self) -> None:
+        variant = self.preview_active_variant or self.preview_last_variant
+        if variant is None:
+            self._set_preview_feedback(
+                "No active preview to reset yet. Start Original or Cleaned first.",
+                "Ready",
+            )
+            self._set_status("Preview ready.")
+            return
+
+        target = self.preview_original_wav if variant == "original" else self.preview_cleaned_wav
+        if target is None or not target.exists():
+            self._set_preview_feedback(
+                "Preview files are missing. Refresh the preview loop first.",
+                "Needs Refresh",
+            )
+            return
+
+        try:
+            if self.preview_playback_state == "stopped":
+                self._play_preview(variant)
+                return
+
+            self._mci_send_command(f"seek {PREVIEW_MCI_ALIAS} to start")
+            self._mci_send_command(f"play {PREVIEW_MCI_ALIAS} repeat")
+            self.preview_playback_state = "playing"
+            self._set_preview_feedback(
+                f"Restarted the {variant} preview loop from the beginning.",
+                f"Playing {variant.capitalize()}",
+            )
+            self._set_status(f"Restarted {variant} preview loop.")
+            self._log(f"Restarted {variant} preview loop.")
+            self._update_preview_transport_buttons()
+        except RuntimeError as exc:
+            messagebox.showerror(APP_NAME, str(exc))
+            self._close_preview_transport()
 
     def _close_preview_transport(self) -> None:
         if os.name == "nt":
@@ -1941,7 +2026,7 @@ class GlideAudioApp(ctk.CTk):
         self.slider_value_labels[key].configure(text=f"{int(round(value * 100))}%")
         self.preset_var.set("Custom")
         if self.media_info is not None and self.mode == "idle":
-            self.preview_status_var.set("Settings changed. Refresh the preview loop to hear the update.")
+            self._set_preview_feedback("Settings changed. Refresh the preview loop to hear the update.", "Needs Refresh")
 
     def _apply_preset(self, preset_name: str) -> None:
         preset = PRESET_VALUES.get(preset_name)
@@ -1952,6 +2037,10 @@ class GlideAudioApp(ctk.CTk):
             self.slider_value_labels[key].configure(text=f"{int(round(preset[key] * 100))}%")
         self.preset_var.set(preset_name)
         if self.media_info is not None and self.mode == "idle":
+            self._set_preview_feedback(
+                f"Preset changed to {preset_name}. Rebuilding the preview loop.",
+                "Generating",
+            )
             self.after(40, self._start_preview_generation)
 
     def _on_export_mode_changed(self) -> None:
@@ -2096,6 +2185,11 @@ class GlideAudioApp(ctk.CTk):
         self.stop_preview_button.configure(
             state="normal" if self.preview_playback_state in {"playing", "paused"} and not busy else "disabled"
         )
+        self.reset_preview_button.configure(
+            state="normal"
+            if has_preview and self.preview_last_variant is not None and not busy
+            else "disabled"
+        )
         self.output_button.configure(state="normal" if has_source and not busy else "disabled")
         self.export_button.configure(state="normal" if has_source and not busy else "disabled")
         self.stop_export_button.configure(state="normal" if self.mode == "export" else "disabled")
@@ -2127,8 +2221,31 @@ class GlideAudioApp(ctk.CTk):
             cleaned_text = "Pause" if self.preview_playback_state == "playing" else "Resume"
 
         button_state = "normal" if has_preview and not busy else "disabled"
-        self.preview_original_toggle_button.configure(text=original_text, state=button_state)
-        self.preview_cleaned_toggle_button.configure(text=cleaned_text, state=button_state)
+        original_active = self.preview_active_variant == "original" and self.preview_playback_state in {"playing", "paused"}
+        cleaned_active = self.preview_active_variant == "cleaned" and self.preview_playback_state in {"playing", "paused"}
+
+        self.preview_original_toggle_button.configure(
+            text=original_text,
+            state=button_state,
+            fg_color=COLORS["primary"] if original_active else "transparent",
+            hover_color=COLORS["primary_hover"] if original_active else COLORS["surface_alt"],
+            text_color=COLORS["bg_primary"] if original_active else COLORS["text_primary"],
+            border_color=COLORS["primary"] if original_active else COLORS["border"],
+        )
+        self.preview_cleaned_toggle_button.configure(
+            text=cleaned_text,
+            state=button_state,
+            fg_color=COLORS["primary"] if cleaned_active else "transparent",
+            hover_color=COLORS["primary_hover"] if cleaned_active else COLORS["surface_alt"],
+            text_color=COLORS["bg_primary"] if cleaned_active else COLORS["text_primary"],
+            border_color=COLORS["primary"] if cleaned_active else COLORS["border"],
+        )
+        self.preview_original_frame.configure(border_color=COLORS["primary"] if original_active else COLORS["border"])
+        self.preview_cleaned_frame.configure(border_color=COLORS["primary"] if cleaned_active else COLORS["border"])
+
+    def _set_preview_feedback(self, message: str, state_label: str) -> None:
+        self.preview_status_var.set(message)
+        self.preview_transport_var.set(state_label)
 
     def _apply_scaled_image(
         self,
@@ -2238,6 +2355,9 @@ class GlideAudioApp(ctk.CTk):
         self._refresh_source_image()
 
     def _set_preview_placeholders(self) -> None:
+        self.preview_active_variant = None
+        self.preview_last_variant = None
+        self.preview_playback_state = "stopped"
         self.preview_original_payload = (
             np.asarray([], dtype=np.float32),
             "Original",
@@ -2250,6 +2370,7 @@ class GlideAudioApp(ctk.CTk):
         )
         self.preview_original_caption_var.set(self.preview_original_payload[2])
         self.preview_cleaned_caption_var.set(self.preview_cleaned_payload[2])
+        self._set_preview_feedback("Preview the original and cleaned loop after analysis.", "Idle")
         self._refresh_preview_images()
 
     def _cleanup_preview_files(self) -> None:
@@ -2260,6 +2381,9 @@ class GlideAudioApp(ctk.CTk):
         self.preview_cleaned_wav = None
         self.preview_original_payload = None
         self.preview_cleaned_payload = None
+        self.preview_active_variant = None
+        self.preview_last_variant = None
+        self.preview_playback_state = "stopped"
 
     def _clear_log(self) -> None:
         self.log_box.configure(state="normal")
