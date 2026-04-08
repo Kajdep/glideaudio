@@ -1116,6 +1116,7 @@ class GlideAudioApp(ctk.CTk):
         self.preview_active_variant: Optional[str] = None
         self.preview_last_variant: Optional[str] = None
         self.preview_playback_state = "stopped"
+        self.preview_loop_after_id: Optional[str] = None
         self.preview_is_stale = True
         self.suggested_preset_name: Optional[str] = None
 
@@ -1235,11 +1236,18 @@ class GlideAudioApp(ctk.CTk):
             text_color=COLORS["text_muted"],
         ).grid(row=0, column=1, sticky="e")
 
-        content = ctk.CTkFrame(self, fg_color="transparent")
-        content.grid(row=1, column=0, sticky="nsew", padx=28, pady=(0, 18))
+        content_scroller = ctk.CTkScrollableFrame(
+            self,
+            fg_color="transparent",
+            corner_radius=0,
+        )
+        content_scroller.grid(row=1, column=0, sticky="nsew", padx=28, pady=(0, 18))
+        content_scroller.grid_columnconfigure(0, weight=1)
+
+        content = ctk.CTkFrame(content_scroller, fg_color="transparent")
+        content.grid(row=0, column=0, sticky="ew")
         content.grid_columnconfigure(0, weight=0)
         content.grid_columnconfigure(1, weight=1)
-        content.grid_rowconfigure(0, weight=1)
 
         left = ctk.CTkFrame(content, fg_color="transparent")
         left.grid(row=0, column=0, sticky="nsw", padx=(0, 18))
@@ -1258,13 +1266,13 @@ class GlideAudioApp(ctk.CTk):
         self.cleanup_card.pack(fill="x")
 
         self.preview_card = self._build_card(right, "2. Preview Before / After")
-        self.preview_card.pack(fill="both", expand=True, pady=(0, 14))
+        self.preview_card.pack(fill="x", pady=(0, 14))
 
         self.export_card = self._build_card(right, "3. Export Final File")
         self.export_card.pack(fill="x", pady=(0, 14))
 
         self.batch_card = self._build_card(right, "Batch Queue (Optional)")
-        self.batch_card.pack(fill="both")
+        self.batch_card.pack(fill="x")
 
         self.log_card = self._build_card(self, "Log")
         self.log_card.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 22))
@@ -2472,14 +2480,16 @@ class GlideAudioApp(ctk.CTk):
                 self._mci_send_command(
                     f'open "{str(target)}" type waveaudio alias {PREVIEW_MCI_ALIAS}'
                 )
+                self._mci_send_command(f"set {PREVIEW_MCI_ALIAS} time format milliseconds")
             elif self.preview_playback_state == "paused":
                 self._resume_preview_audio()
                 return
 
-            self._mci_send_command(f"play {PREVIEW_MCI_ALIAS} repeat")
+            self._mci_send_command(f"play {PREVIEW_MCI_ALIAS}")
             self.preview_active_variant = variant
             self.preview_last_variant = variant
             self.preview_playback_state = "playing"
+            self._schedule_preview_loop_restart()
             self._set_preview_feedback(
                 f"Playing the {variant} preview loop. Switch cards instantly to compare the same section.",
                 f"Playing {variant.capitalize()}",
@@ -2502,6 +2512,7 @@ class GlideAudioApp(ctk.CTk):
             return
         try:
             self._mci_send_command(f"pause {PREVIEW_MCI_ALIAS}")
+            self._cancel_preview_loop_restart()
             self.preview_playback_state = "paused"
             variant = self.preview_active_variant or "current"
             self._set_preview_feedback(
@@ -2521,6 +2532,7 @@ class GlideAudioApp(ctk.CTk):
         try:
             self._mci_send_command(f"resume {PREVIEW_MCI_ALIAS}")
             self.preview_playback_state = "playing"
+            self._schedule_preview_loop_restart()
             variant = self.preview_active_variant or "current"
             self._set_preview_feedback(
                 f"Playing the {variant} preview loop. Pause or switch cards to compare quickly.",
@@ -2567,8 +2579,9 @@ class GlideAudioApp(ctk.CTk):
                 return
 
             self._mci_send_command(f"seek {PREVIEW_MCI_ALIAS} to start")
-            self._mci_send_command(f"play {PREVIEW_MCI_ALIAS} repeat")
+            self._mci_send_command(f"play {PREVIEW_MCI_ALIAS}")
             self.preview_playback_state = "playing"
+            self._schedule_preview_loop_restart()
             self._set_preview_feedback(
                 f"Restarted the {variant} preview loop from the beginning.",
                 f"Playing {variant.capitalize()}",
@@ -2581,12 +2594,51 @@ class GlideAudioApp(ctk.CTk):
             self._close_preview_transport()
 
     def _close_preview_transport(self) -> None:
+        self._cancel_preview_loop_restart()
         if os.name == "nt":
             self._mci_send_command(f"stop {PREVIEW_MCI_ALIAS}", allow_error=True)
             self._mci_send_command(f"close {PREVIEW_MCI_ALIAS}", allow_error=True)
         self.preview_active_variant = None
         self.preview_playback_state = "stopped"
         self._update_preview_transport_buttons()
+
+    def _cancel_preview_loop_restart(self) -> None:
+        if self.preview_loop_after_id is not None:
+            try:
+                self.after_cancel(self.preview_loop_after_id)
+            except Exception:
+                pass
+            self.preview_loop_after_id = None
+
+    def _preview_status_ms(self, field: str) -> int:
+        value = self._mci_send_command(f"status {PREVIEW_MCI_ALIAS} {field}")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Preview playback failed: could not read MCI {field} status.") from exc
+
+    def _schedule_preview_loop_restart(self) -> None:
+        if os.name != "nt" or self.preview_playback_state != "playing":
+            return
+        self._cancel_preview_loop_restart()
+        try:
+            length_ms = self._preview_status_ms("length")
+            position_ms = self._preview_status_ms("position")
+            remaining_ms = max(120, length_ms - position_ms + 40)
+        except RuntimeError:
+            remaining_ms = 250
+        self.preview_loop_after_id = self.after(remaining_ms, self._handle_preview_loop_restart)
+
+    def _handle_preview_loop_restart(self) -> None:
+        self.preview_loop_after_id = None
+        if os.name != "nt" or self.preview_playback_state != "playing" or self.preview_active_variant is None:
+            return
+        try:
+            self._mci_send_command(f"seek {PREVIEW_MCI_ALIAS} to start")
+            self._mci_send_command(f"play {PREVIEW_MCI_ALIAS}")
+            self._schedule_preview_loop_restart()
+        except RuntimeError:
+            self._close_preview_transport()
 
     def _mci_send_command(self, command: str, *, allow_error: bool = False) -> str:
         if os.name != "nt":
@@ -3222,12 +3274,12 @@ class GlideAudioApp(ctk.CTk):
             label=self.source_preview_label,
             pil_image=self.source_pil_image,
             aspect_ratio=SOURCE_PREVIEW_ASPECT,
-            fallback_size=fit_aspect_size(SOURCE_PREVIEW_ASPECT, max(140, available_width), max_height=340)
+            fallback_size=fit_aspect_size(SOURCE_PREVIEW_ASPECT, max(140, available_width), max_height=240)
             if available_width > 1
             else SOURCE_PREVIEW_SIZE,
-            max_height=340,
+            max_height=240,
             target_attr="source_image",
-            forced_size=fit_aspect_size(SOURCE_PREVIEW_ASPECT, max(140, available_width), max_height=340)
+            forced_size=fit_aspect_size(SOURCE_PREVIEW_ASPECT, max(140, available_width), max_height=240)
             if available_width > 1
             else None,
         )
@@ -3237,7 +3289,7 @@ class GlideAudioApp(ctk.CTk):
         available_width = self.preview_images_frame.winfo_width()
         gutter = 20
         per_card_width = max(160, (available_width - gutter) // 2) if available_width > 1 else AB_PREVIEW_SIZE[0]
-        shared_height = max(164, min(228, int(round(per_card_width * 0.44))))
+        shared_height = max(140, min(176, int(round(per_card_width * 0.38))))
         shared_size = (per_card_width, shared_height)
 
         if self.preview_original_payload is not None:
