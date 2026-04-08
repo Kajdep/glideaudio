@@ -6,7 +6,7 @@
 - Slug: `glideaudio`
 - Repo path: `D:\glide-apps\glideaudio`
 - GitHub repo: `https://github.com/Kajdep/glideaudio`
-- Product status: `desktop prototype packaged for testing`
+- Product status: `public itch release with packaged Windows build`
 - Platform: `Windows desktop`
 
 ## Positioning
@@ -33,10 +33,10 @@
 ## URLs
 
 - Planned glidevideo.com page: `https://www.glidevideo.com/glideaudio`
-- itch.io listing: `_TBD_`
-- Microsoft Store listing: `_TBD_`
+- itch.io listing: `https://kajdep.itch.io/glideaudio`
+- Microsoft Store listing: `Store ID 9P1F9CXS8KPF. Deep link and web URL become available after the product is live.`
 - Privacy policy URL: `Hosted URL still TBD. Local policy file: D:\glide-apps\glideaudio\PRIVACY_POLICY.md`
-- Support page or support email: `_TBD_`
+- Support page or support email: `https://kajdep.itch.io/glideaudio`
 
 ## Submission Assets
 
@@ -56,11 +56,14 @@
 
 ## Microsoft Store Identity
 
-- Partner Center identity / package name: `_TBD_`
-- Publisher: `_TBD_`
-- Publisher display name: `_TBD_`
-- Package family name: `_TBD_`
-- Store ID / product ID: `_TBD_`
+- Partner Center identity / package name: `NatflaLtd.GlideAudio`
+- Publisher: `CN=5A609937-1921-4929-89C2-766139363CA0`
+- Publisher display name: `Natfla Ltd`
+- Package family name: `NatflaLtd.GlideAudio_pa3aqdh53p230`
+- Package SID: `S-1-15-2-2161190272-2418176117-478214088-3628919072-1152830748-3081032745-1746997563`
+- Store ID / product ID: `9P1F9CXS8KPF`
+- Store deep link: `Available after the product is live`
+- Web Store URL: `Available after the product is live`
 
 ## Technical Notes
 
@@ -86,9 +89,9 @@
 
 - [ ] pricing
 - [ ] privacy URL
-- [ ] support contact
+- [ ] dedicated support contact beyond the itch release page
 - [ ] screenshot list
 - [ ] trailer/demo
-- [ ] Microsoft Store identity values
-- [ ] final hosted submission URLs
+- [ ] Microsoft Store deep link and web URL once the product is live
+- [ ] final hosted privacy URL
 - [ ] final system requirements confirmation from manual QA

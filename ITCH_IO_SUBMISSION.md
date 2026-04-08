@@ -4,10 +4,11 @@
 
 - Project title: `GlideAudio`
 - URL slug: `glideaudio`
+- Listing URL: `https://kajdep.itch.io/glideaudio`
 - Project type: `Downloadable`
 - Supported platform: `Windows`
 - Pricing model: `_TBD_`
-- Visibility status: `_TBD_`
+- Visibility status: `live`
 
 ## Public Assets
 
@@ -94,9 +95,9 @@ If FFmpeg is not bundled, make sure ffmpeg and ffprobe are available on PATH bef
 
 ## External Links
 
-- Website: `https://www.glidevideo.com/glideaudio` planned
+- Website: `https://kajdep.itch.io/glideaudio`
 - Privacy policy: `Hosted URL still TBD. Packaged release includes PRIVACY_POLICY.md`
-- Support: `_TBD_`
+- Support: `https://kajdep.itch.io/glideaudio`
 
 ## Final Check
 
@@ -104,4 +105,4 @@ If FFmpeg is not bundled, make sure ffmpeg and ffprobe are available on PATH bef
 - [ ] screenshots are current
 - [ ] upload artifact path filled
 - [ ] install notes filled
-- [ ] privacy/support links are live
+- [ ] hosted privacy URL is live
